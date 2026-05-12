@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f7f9fc;
+  --bg-tertiary: #f4f7fb;
+  --border: #d9e3ef;
+  --text-primary: #1f2937;
+  --text-secondary: #64748b;
+  --text-tertiary: #94a3b8;
+  --brand: #185fa5;
+  --brand-deep: #0c447c;
+  --brand-soft: #e6f1fb;
+  --imp-soft: #eeedfe;
+  --imp-deep: #3c3489;
+  --ok-bg: #e7f8f1;
+  --ok-tx: #0b6b4b;
+  --warn-bg: #fff3df;
+  --warn-tx: #8a5a12;
+  --err-bg: #fdecef;
+  --err-tx: #9a1f3c;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+.shell-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+}
+
+.logo { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 500; }
+.logo-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--brand-soft);
+  color: var(--brand-deep);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+}
+
+.page-wrap { min-height: calc(100vh - 58px); padding: 24px; }
+.card { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 12px; }
+.btn-primary {
+  background: var(--brand);
+  color: #e6f1fb;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.btn-secondary {
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+.badge-cj { background: var(--brand-soft); color: var(--brand-deep); }
+.badge-imp { background: var(--imp-soft); color: var(--imp-deep); }
+.stat { background: var(--bg-secondary); border-radius: 10px; padding: 12px; text-align: center; }
+.field {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
