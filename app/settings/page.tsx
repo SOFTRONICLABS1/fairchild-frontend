@@ -112,7 +112,6 @@ export default function SettingsPage() {
             <PlatformCard title="CJ Affiliate" subtitle="Commission Junction" initials="CJ">
               <div className="grid gap-2 md:grid-cols-2">
                 <Field label="API key" value="cj_live_xxxxxxxxxxxx" password />
-                <Field label="Website ID" value="12345678" />
               </div>
             </PlatformCard>
 
@@ -125,17 +124,21 @@ export default function SettingsPage() {
 
             <PlatformCard title="WordPress" subtitle="WordPress site connection" initials="WP">
               <div className="grid gap-2 md:grid-cols-2">
-                <Field label="Site URL" value="https://yoursite.com" />
-                <Field label="Username" value="admin" />
-                <Field label="App password" value="xxxx xxxx xxxx xxxx" password />
-                <Field label="Default category ID" value="1" />
+                <Field label="Domain" value="https://yoursite.com" />
+                <Field label="Consumer Key" value="ck_xxxxxxxxxxxx" />
+                <Field label="Consumer Secret" value="cs_xxxxxxxxxxxx" password />
               </div>
             </PlatformCard>
 
             <PlatformCard title="Metricool" subtitle="Metricool publishing connection" initials="MT" connected={false}>
               <div className="grid gap-2 md:grid-cols-2">
-                <Field label="API token" placeholder="Paste Metricool token" password />
-                <Field label="User ID" placeholder="metricool_user_id" />
+                <Field label="Auth Token" placeholder="Paste Metricool token" password />
+              </div>
+            </PlatformCard>
+
+            <PlatformCard title="Renderform" subtitle="Renderform image API connection" initials="RF">
+              <div className="grid gap-2 md:grid-cols-2">
+                <Field label="API Key" value="rf_key_xxxxxxxxxxxx" password />
               </div>
             </PlatformCard>
           </div>
