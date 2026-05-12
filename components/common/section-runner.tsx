@@ -33,7 +33,7 @@ export default function SectionRunner({ title, run, payload }: { title: string; 
   return <div className="space-y-3 rounded border bg-slate-50 p-4">
     <div className="flex items-center justify-between"><h3 className="font-medium">{title}</h3><button onClick={execute} disabled={loading} className="rounded bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-50">{loading ? "Running..." : "Run"}</button></div>
     {error && <p className="text-sm text-red-600">{error}</p>}
-    {data && <ResponseViewer data={data} />}
+    {Boolean(data) && <ResponseViewer data={data} />}
     <HistoryPanel items={history} />
   </div>;
 }
