@@ -1,0 +1,187 @@
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+.nav{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:0.5px solid var(--color-border-tertiary);background:var(--color-background-primary)}
+.logo{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:500;color:var(--color-text-primary)}
+.logo-icon{width:28px;height:28px;background:var(--color-background-info);border-radius:var(--border-radius-md);display:flex;align-items:center;justify-content:center}
+.page{background:var(--color-background-tertiary);padding:24px;min-height:640px}
+.page-head{margin-bottom:20px}
+.page-head h2{font-size:18px;font-weight:500;color:var(--color-text-primary);margin-bottom:4px}
+.page-head p{font-size:13px;color:var(--color-text-secondary)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:16px}
+.card-title{font-size:14px;font-weight:500;color:var(--color-text-primary);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.prod-item{display:flex;align-items:center;gap:10px;padding:8px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-tertiary);margin-bottom:8px}
+.prod-thumb{width:36px;height:36px;border-radius:var(--border-radius-md);background:var(--color-background-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.prod-info{flex:1;min-width:0}
+.prod-name{font-size:13px;font-weight:500;color:var(--color-text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prod-price{font-size:12px;color:var(--color-text-secondary)}
+.status-pill{font-size:11px;padding:2px 8px;border-radius:99px;white-space:nowrap}
+.pill-wait{background:var(--color-background-secondary);color:var(--color-text-secondary)}
+.pill-run{background:var(--color-background-warning);color:var(--color-text-warning)}
+.pill-done{background:var(--color-background-success);color:var(--color-text-success)}
+.pill-err{background:var(--color-background-danger);color:var(--color-text-danger)}
+.prog-wrap{margin-bottom:16px}
+.prog-label{display:flex;justify-content:space-between;font-size:12px;color:var(--color-text-secondary);margin-bottom:6px}
+.prog-track{height:6px;background:var(--color-background-secondary);border-radius:99px;overflow:hidden}
+.prog-fill{height:100%;background:#185FA5;border-radius:99px;transition:width .4s}
+.step-list{display:flex;flex-direction:column;gap:6px}
+.step{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-tertiary)}
+.step.active{border-color:#185FA5;background:#E6F1FB}
+.step.done{border-color:var(--color-border-success);background:var(--color-background-success)}
+.step.error{border-color:var(--color-border-danger);background:var(--color-background-danger)}
+.step-num{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;flex-shrink:0}
+.num-wait{background:var(--color-background-secondary);color:var(--color-text-secondary)}
+.num-run{background:#185FA5;color:#E6F1FB}
+.num-done{background:var(--color-text-success);color:#fff}
+.step-info{flex:1}
+.step-name{font-size:13px;font-weight:500;color:var(--color-text-primary)}
+.step-desc{font-size:11px;color:var(--color-text-secondary)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin .8s linear infinite;display:inline-block}
+.opts-row{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.opt-item{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md)}
+.opt-left{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--color-text-primary)}
+.toggle{width:36px;height:20px;border-radius:99px;background:#185FA5;position:relative;cursor:pointer;flex-shrink:0}
+.toggle-off{background:var(--color-border-secondary)}
+.toggle::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s}
+.toggle.on::after{transform:translateX(16px)}
+.run-btn{width:100%;padding:11px;border:none;border-radius:var(--border-radius-md);background:#185FA5;color:#E6F1FB;font-size:14px;font-weight:500;cursor:pointer}
+.result-card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:16px;margin-top:16px}
+.result-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid var(--color-border-tertiary);font-size:13px}
+.result-row:last-child{border-bottom:none}
+.result-key{color:var(--color-text-secondary)}
+.result-val{color:var(--color-text-info);font-weight:500}
+</style>
+
+<h2 class="sr-only">Posto page 3 — pipeline execution and status tracker</h2>
+
+<div class="nav">
+  <div class="logo">
+    <div class="logo-icon"><i class="ti ti-bolt" style="font-size:16px;color:#0C447C" aria-hidden="true"></i></div>
+    Posto
+  </div>
+  <div style="font-size:13px;color:var(--color-text-secondary);display:flex;align-items:center;gap:6px">
+    <span style="cursor:pointer">Results</span>
+    <i class="ti ti-chevron-right" style="font-size:12px" aria-hidden="true"></i>
+    <span style="color:var(--color-text-primary);font-weight:500">Pipeline</span>
+  </div>
+</div>
+
+<div class="page">
+  <div class="page-head">
+    <h2>Run pipeline</h2>
+    <p>2 products selected · configure options and start</p>
+  </div>
+
+  <div class="grid">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card">
+        <div class="card-title"><i class="ti ti-package" style="font-size:16px" aria-hidden="true"></i> Selected products</div>
+        <div class="prod-item">
+          <div class="prod-thumb"><i class="ti ti-headphones" style="font-size:16px;color:var(--color-text-tertiary)" aria-hidden="true"></i></div>
+          <div class="prod-info">
+            <div class="prod-name">Sony WH-1000XM5</div>
+            <div class="prod-price">$279.99 · CJ Affiliate</div>
+          </div>
+          <span class="status-pill pill-done" id="s1">Done</span>
+        </div>
+        <div class="prod-item">
+          <div class="prod-thumb"><i class="ti ti-device-laptop" style="font-size:16px;color:var(--color-text-tertiary)" aria-hidden="true"></i></div>
+          <div class="prod-info">
+            <div class="prod-name">Logitech MX Master 3S</div>
+            <div class="prod-price">$89.99 · Impact</div>
+          </div>
+          <span class="status-pill pill-run" id="s2"><span class="spin">↻</span> Running</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><i class="ti ti-settings" style="font-size:16px" aria-hidden="true"></i> Options</div>
+        <div class="opts-row">
+          <div class="opt-item">
+            <div class="opt-left"><i class="ti ti-brand-wordpress" style="font-size:16px;color:var(--color-text-secondary)" aria-hidden="true"></i> Create WordPress post</div>
+            <div class="toggle on" id="tog-wp" onclick="toggleOpt('tog-wp')"></div>
+          </div>
+          <div class="opt-item">
+            <div class="opt-left"><i class="ti ti-calendar-event" style="font-size:16px;color:var(--color-text-secondary)" aria-hidden="true"></i> Schedule to Metricool</div>
+            <div class="toggle on" id="tog-mc" onclick="toggleOpt('tog-mc')"></div>
+          </div>
+          <div class="opt-item">
+            <div class="opt-left"><i class="ti ti-sparkles" style="font-size:16px;color:var(--color-text-secondary)" aria-hidden="true"></i> GPT-generated content</div>
+            <div class="toggle on" id="tog-gpt" onclick="toggleOpt('tog-gpt')"></div>
+          </div>
+          <div class="opt-item">
+            <div class="opt-left"><i class="ti ti-photo" style="font-size:16px;color:var(--color-text-secondary)" aria-hidden="true"></i> Edit image (resize + watermark)</div>
+            <div class="toggle on" id="tog-img" onclick="toggleOpt('tog-img')"></div>
+          </div>
+        </div>
+        <button class="run-btn" onclick="sendPrompt('Show me the post history page design')">
+          <i class="ti ti-player-play" style="font-size:14px;vertical-align:-2px;margin-right:6px" aria-hidden="true"></i>
+          Start pipeline
+        </button>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card">
+        <div class="card-title"><i class="ti ti-activity" style="font-size:16px" aria-hidden="true"></i> Logitech MX Master 3S — live status</div>
+        <div class="prog-wrap">
+          <div class="prog-label"><span>Progress</span><span>3 / 6 steps</span></div>
+          <div class="prog-track"><div class="prog-fill" id="prog" style="width:50%"></div></div>
+        </div>
+        <div class="step-list">
+          <div class="step done">
+            <div class="step-num num-done"><i class="ti ti-check" style="font-size:11px" aria-hidden="true"></i></div>
+            <div class="step-info"><div class="step-name">Download image</div><div class="step-desc">image_1200x630.jpg saved</div></div>
+          </div>
+          <div class="step done">
+            <div class="step-num num-done"><i class="ti ti-check" style="font-size:11px" aria-hidden="true"></i></div>
+            <div class="step-info"><div class="step-name">Edit image</div><div class="step-desc">Resized · watermark applied</div></div>
+          </div>
+          <div class="step done">
+            <div class="step-num num-done"><i class="ti ti-check" style="font-size:11px" aria-hidden="true"></i></div>
+            <div class="step-info"><div class="step-name">Create post package</div><div class="step-desc">GPT content generated</div></div>
+          </div>
+          <div class="step active">
+            <div class="step-num num-run"><span class="spin" style="font-size:12px">↻</span></div>
+            <div class="step-info"><div class="step-name">Upload to WordPress media</div><div class="step-desc">Uploading edited image…</div></div>
+          </div>
+          <div class="step">
+            <div class="step-num num-wait">5</div>
+            <div class="step-info"><div class="step-name">Create WordPress post</div><div class="step-desc">Waiting</div></div>
+          </div>
+          <div class="step">
+            <div class="step-num num-wait">6</div>
+            <div class="step-info"><div class="step-name">Schedule to Metricool</div><div class="step-desc">Waiting</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="result-card">
+        <div style="font-size:13px;font-weight:500;color:var(--color-text-primary);margin-bottom:10px;display:flex;align-items:center;gap:6px">
+          <i class="ti ti-check" style="color:var(--color-text-success);font-size:16px" aria-hidden="true"></i>
+          Sony WH-1000XM5 — completed
+        </div>
+        <div class="result-row">
+          <span class="result-key">WordPress post</span>
+          <span class="result-val">yoursite.com/sony-wh-1000xm5 <i class="ti ti-external-link" style="font-size:12px" aria-hidden="true"></i></span>
+        </div>
+        <div class="result-row">
+          <span class="result-key">WP post ID</span>
+          <span style="font-size:13px;color:var(--color-text-primary)">#4821</span>
+        </div>
+        <div class="result-row">
+          <span class="result-key">Metricool post</span>
+          <span style="font-size:13px;color:var(--color-text-success)">Scheduled for tomorrow 9am</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function toggleOpt(id){
+  const el=document.getElementById(id);
+  el.classList.toggle('on');
+}
+</script>

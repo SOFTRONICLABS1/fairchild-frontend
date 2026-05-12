@@ -1,0 +1,179 @@
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+.nav{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:0.5px solid var(--color-border-tertiary);background:var(--color-background-primary)}
+.logo{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:500;color:var(--color-text-primary)}
+.logo-icon{width:28px;height:28px;background:var(--color-background-info);border-radius:var(--border-radius-md);display:flex;align-items:center;justify-content:center}
+.layout{display:grid;grid-template-columns:180px 1fr;min-height:580px}
+.sidebar{background:var(--color-background-primary);border-right:0.5px solid var(--color-border-tertiary);padding:16px}
+.slink{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--color-text-secondary);padding:8px 10px;border-radius:var(--border-radius-md);cursor:pointer;margin-bottom:2px}
+.slink.on{background:var(--color-background-secondary);color:var(--color-text-primary);font-weight:500}
+.slink i{font-size:16px}
+.main{padding:24px;background:var(--color-background-tertiary)}
+.section{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:18px;margin-bottom:16px}
+.sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.sec-title{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:500;color:var(--color-text-primary)}
+.sec-icon{width:28px;height:28px;border-radius:var(--border-radius-md);display:flex;align-items:center;justify-content:center;font-size:14px}
+.icon-cj{background:#E6F1FB;color:#0C447C}
+.icon-imp{background:#EEEDFE;color:#3C3489}
+.icon-wp{background:#E1F5EE;color:#085041}
+.icon-mc{background:#FAEEDA;color:#633806}
+.icon-gpt{background:#FBEAF0;color:#72243E}
+.connected{font-size:12px;padding:3px 10px;border-radius:99px;background:var(--color-background-success);color:var(--color-text-success)}
+.disconnected{font-size:12px;padding:3px 10px;border-radius:99px;background:var(--color-background-secondary);color:var(--color-text-secondary)}
+.field-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:12px;color:var(--color-text-secondary)}
+.field input{font-size:13px;padding:8px 10px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:var(--color-background-primary);color:var(--color-text-primary)}
+.field input:focus{outline:none;border-color:#185FA5}
+.field input[type=password]{font-family:monospace;letter-spacing:2px}
+.field-full{grid-column:1/-1}
+.foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px;padding-top:10px;border-top:0.5px solid var(--color-border-tertiary)}
+.btn-test{font-size:13px;padding:7px 14px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:none;cursor:pointer;color:var(--color-text-secondary)}
+.btn-save{font-size:13px;padding:7px 14px;border:none;border-radius:var(--border-radius-md);background:#185FA5;color:#E6F1FB;cursor:pointer}
+.mock-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid var(--color-border-tertiary);font-size:13px}
+.mock-row:last-child{border-bottom:none}
+.mock-label{color:var(--color-text-primary)}
+.mock-sub{font-size:11px;color:var(--color-text-secondary);margin-top:1px}
+.toggle{width:36px;height:20px;border-radius:99px;background:#185FA5;position:relative;cursor:pointer;flex-shrink:0}
+.toggle::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+.toggle.on::after{transform:translateX(16px)}
+.toggle.off{background:var(--color-border-secondary)}
+</style>
+
+<h2 class="sr-only">Posto page 5 — settings and platform credentials</h2>
+
+<div class="nav">
+  <div class="logo">
+    <div class="logo-icon"><i class="ti ti-bolt" style="font-size:16px;color:#0C447C" aria-hidden="true"></i></div>
+    Posto
+  </div>
+  <button onclick="sendPrompt('Show me the search page design')"><i class="ti ti-arrow-left" style="font-size:15px;vertical-align:-2px" aria-hidden="true"></i> Back to search</button>
+</div>
+
+<div class="layout">
+  <div class="sidebar">
+    <div class="slink on"><i class="ti ti-plug" aria-hidden="true"></i> Platforms</div>
+    <div class="slink"><i class="ti ti-sparkles" aria-hidden="true"></i> GPT / AI</div>
+    <div class="slink"><i class="ti ti-template" aria-hidden="true"></i> Templates</div>
+    <div class="slink"><i class="ti ti-photo" aria-hidden="true"></i> Image settings</div>
+    <div class="slink"><i class="ti ti-bell" aria-hidden="true"></i> Notifications</div>
+    <div class="slink"><i class="ti ti-database" aria-hidden="true"></i> Database</div>
+  </div>
+
+  <div class="main">
+
+    <div class="section">
+      <div class="sec-head">
+        <div class="sec-title">
+          <div class="sec-icon icon-cj">CJ</div>
+          CJ Affiliate
+        </div>
+        <span class="connected">Connected</span>
+      </div>
+      <div class="field-grid">
+        <div class="field"><label>API key</label><input type="password" value="cj_live_xxxxxxxxxxxx" /></div>
+        <div class="field"><label>Website ID</label><input type="text" value="12345678" /></div>
+      </div>
+      <div class="foot">
+        <button class="btn-test"><i class="ti ti-plug" style="font-size:13px;vertical-align:-2px" aria-hidden="true"></i> Test connection</button>
+        <button class="btn-save">Save</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head">
+        <div class="sec-title">
+          <div class="sec-icon icon-imp">IM</div>
+          Impact
+        </div>
+        <span class="connected">Connected</span>
+      </div>
+      <div class="field-grid">
+        <div class="field"><label>Account SID</label><input type="text" value="IRxxxxxxxxx" /></div>
+        <div class="field"><label>Auth token</label><input type="password" value="impact_xxxxxxxxxxxx" /></div>
+      </div>
+      <div class="foot">
+        <button class="btn-test"><i class="ti ti-plug" style="font-size:13px;vertical-align:-2px" aria-hidden="true"></i> Test connection</button>
+        <button class="btn-save">Save</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head">
+        <div class="sec-title">
+          <div class="sec-icon icon-wp"><i class="ti ti-brand-wordpress" aria-hidden="true"></i></div>
+          WordPress
+        </div>
+        <span class="connected">Connected</span>
+      </div>
+      <div class="field-grid">
+        <div class="field field-full"><label>Site URL</label><input type="text" value="https://yoursite.com" /></div>
+        <div class="field"><label>Username</label><input type="text" value="admin" /></div>
+        <div class="field"><label>App password</label><input type="password" value="xxxx xxxx xxxx xxxx" /></div>
+        <div class="field"><label>Default post status</label>
+          <select style="font-size:13px;padding:8px 10px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:var(--color-background-primary);color:var(--color-text-primary)">
+            <option>Draft</option><option>Publish</option><option>Pending</option>
+          </select>
+        </div>
+        <div class="field"><label>Default category ID</label><input type="text" value="1" /></div>
+      </div>
+      <div class="foot">
+        <button class="btn-test"><i class="ti ti-plug" style="font-size:13px;vertical-align:-2px" aria-hidden="true"></i> Test connection</button>
+        <button class="btn-save">Save</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head">
+        <div class="sec-title">
+          <div class="sec-icon icon-mc"><i class="ti ti-calendar-event" aria-hidden="true"></i></div>
+          Metricool
+        </div>
+        <span class="disconnected">Not connected</span>
+      </div>
+      <div class="field-grid">
+        <div class="field"><label>API token</label><input type="password" placeholder="Paste Metricool token…" /></div>
+        <div class="field"><label>User ID</label><input type="text" placeholder="metricool_user_id" /></div>
+      </div>
+      <div class="foot">
+        <button class="btn-test"><i class="ti ti-plug" style="font-size:13px;vertical-align:-2px" aria-hidden="true"></i> Test connection</button>
+        <button class="btn-save">Save</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head">
+        <div class="sec-title">
+          <div class="sec-icon icon-gpt"><i class="ti ti-sparkles" aria-hidden="true"></i></div>
+          GPT / AI settings
+        </div>
+      </div>
+      <div class="field-grid">
+        <div class="field"><label>OpenAI API key</label><input type="password" value="sk-proj-xxxxxxxxxxxx" /></div>
+        <div class="field"><label>Model</label>
+          <select style="font-size:13px;padding:8px 10px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:var(--color-background-primary);color:var(--color-text-primary)">
+            <option>gpt-4o</option><option>gpt-4o-mini</option><option>gpt-4-turbo</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:6px">
+        <div class="mock-row">
+          <div><div class="mock-label">Mock mode — CJ</div><div class="mock-sub">Use mock data instead of real API</div></div>
+          <div class="toggle off" onclick="this.classList.toggle('on');this.classList.toggle('off')"></div>
+        </div>
+        <div class="mock-row">
+          <div><div class="mock-label">Mock mode — Impact</div><div class="mock-sub">Use mock data instead of real API</div></div>
+          <div class="toggle off" onclick="this.classList.toggle('on');this.classList.toggle('off')"></div>
+        </div>
+        <div class="mock-row">
+          <div><div class="mock-label">Mock mode — WordPress</div><div class="mock-sub">Simulate post creation without posting</div></div>
+          <div class="toggle off" onclick="this.classList.toggle('on');this.classList.toggle('off')"></div>
+        </div>
+      </div>
+      <div class="foot">
+        <button class="btn-save">Save all settings</button>
+      </div>
+    </div>
+
+  </div>
+</div>
