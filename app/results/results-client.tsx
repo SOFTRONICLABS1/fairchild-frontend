@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import TopNav from "@/components/flow/top-nav";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 
@@ -80,15 +80,37 @@ function normalizeTitle(title: string): string {
 }
 
 function dedupeByTitle(rows: ResultRow[]): ResultRow[] {
-  const uniqueMap = new Map<string, ResultRow>();
-  for (const row of rows) {
-    const key = normalizeTitle(row.product);
-    const existing = uniqueMap.get(key);
+  const impactRows = rows.filter((row) => row.platform === "Impact");
+  const cjRows = rows.filter((row) => row.platform === "CJ");
+
+  const impactUnique = new Map<string, ResultRow>();
+  for (const row of impactRows) {
+    const key = `impact:${normalizeTitle(row.product)}`;
+    const existing = impactUnique.get(key);
     if (!existing || row.discount > existing.discount) {
-      uniqueMap.set(key, row);
+      impactUnique.set(key, row);
     }
   }
-  return Array.from(uniqueMap.values());
+
+  const cjByTitle = new Map<string, ResultRow>();
+  for (const row of cjRows) {
+    const key = `cj-title:${normalizeTitle(row.product)}`;
+    const existing = cjByTitle.get(key);
+    if (!existing || row.discount > existing.discount) {
+      cjByTitle.set(key, row);
+    }
+  }
+
+  const cjById = new Map<string, ResultRow>();
+  for (const row of cjByTitle.values()) {
+    const key = `cj-id:${row.id}`;
+    const existing = cjById.get(key);
+    if (!existing || row.discount > existing.discount) {
+      cjById.set(key, row);
+    }
+  }
+
+  return [...Array.from(cjById.values()), ...Array.from(impactUnique.values())];
 }
 
 async function fetchImpactPage(keyword: string, offset: number): Promise<{ rows: ResultRow[]; nextOffset: number; hasMore: boolean }> {
@@ -173,6 +195,7 @@ async function fetchCjPage(
 }
 
 export default function ResultsClientPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const keyword = (searchParams.get("q") ?? "").trim();
   const useCj = searchParams.get("cj") !== "0";
@@ -192,6 +215,7 @@ export default function ResultsClientPage() {
   const [page, setPage] = useState(1);
   const [preview, setPreview] = useState<{ url: string; title: string } | null>(null);
   const cjLastCallAtRef = useRef(0);
+  const cjLinkHealthCacheRef = useRef<Map<string, boolean>>(new Map());
 
   const cacheKey = useMemo(
     () => `results-cache:v1:${keyword}:${useCj ? "1" : "0"}:${useImpact ? "1" : "0"}`,
@@ -243,7 +267,30 @@ export default function ResultsClientPage() {
       }
     });
 
-    return { chunkRows, nextState, failures };
+    const cjRows = chunkRows.filter((row) => row.platform === "CJ");
+    const nonCjRows = chunkRows.filter((row) => row.platform !== "CJ");
+    const validatedCjRows: ResultRow[] = [];
+
+    for (const row of cjRows) {
+      if (!row.productUrl) continue;
+      const cached = cjLinkHealthCacheRef.current.get(row.productUrl);
+      if (cached !== undefined) {
+        if (cached) validatedCjRows.push(row);
+        continue;
+      }
+
+      try {
+        const response = await fetch(`/api/url-health?url=${encodeURIComponent(row.productUrl)}`);
+        const payload = (await response.json()) as { ok?: boolean };
+        const isHealthy = payload.ok === true;
+        cjLinkHealthCacheRef.current.set(row.productUrl, isHealthy);
+        if (isHealthy) validatedCjRows.push(row);
+      } catch {
+        cjLinkHealthCacheRef.current.set(row.productUrl, false);
+      }
+    }
+
+    return { chunkRows: [...validatedCjRows, ...nonCjRows], nextState, failures };
   };
 
   useEffect(() => {
@@ -354,6 +401,24 @@ export default function ResultsClientPage() {
   );
   const hasNextUiPage = rows.length > page * PAGE_SIZE;
   const hasMoreFromApis = cursor.cjHasMore || cursor.impactHasMore;
+  const selectedRows = useMemo(
+    () => rows.filter((row) => Boolean(selectedIds[row.id])),
+    [rows, selectedIds]
+  );
+
+  const handleBuildPostPackage = () => {
+    const payload = selectedRows.map((row) => ({
+      id: row.id,
+      product: row.product,
+      imageUrl: row.imageUrl,
+      productUrl: row.productUrl,
+      platform: row.platform,
+      price: row.price,
+      discount: row.discount
+    }));
+    sessionStorage.setItem("pipeline:selected-products", JSON.stringify(payload));
+    router.push("/pipeline");
+  };
 
   return (
     <>
@@ -491,7 +556,7 @@ export default function ResultsClientPage() {
             <p className="text-sm text-slate-500"><span className="font-medium text-slate-900">{selectedCount}</span> products selected</p>
             <div className="flex gap-2">
               <Link href="/search" className="btn-secondary">Refine search</Link>
-              <Link href="/pipeline" className="btn-primary">Build post package</Link>
+              <button type="button" onClick={handleBuildPostPackage} className="btn-primary">Build post package</button>
             </div>
           </div>
           {preview ? (
