@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import TopNav, { NavButton } from "@/components/flow/top-nav";
 
 function PlatformCard({ active, code, title, subtitle, tone, onClick }: { active: boolean; code: string; title: string; subtitle: string; tone: "cj" | "imp"; onClick: () => void; }) {
@@ -17,8 +18,22 @@ function PlatformCard({ active, code, title, subtitle, tone, onClick }: { active
 }
 
 export default function SearchPage() {
+  const router = useRouter();
   const [cj, setCj] = useState(true);
   const [impact, setImpact] = useState(false);
+  const [keyword, setKeyword] = useState("");
+
+  const runSearch = () => {
+    const trimmed = keyword.trim();
+    const useCj = cj || (!cj && !impact);
+    const useImpact = impact || (!cj && !impact);
+    const params = new URLSearchParams({
+      q: trimmed,
+      cj: useCj ? "1" : "0",
+      impact: useImpact ? "1" : "0"
+    });
+    router.push(`/results?${params.toString()}`);
+  };
 
   return (
     <>
@@ -35,8 +50,16 @@ export default function SearchPage() {
 
           <div className="card mb-4 flex items-center gap-2 px-3 py-2">
             <span className="text-slate-400">⌕</span>
-            <input className="w-full border-none bg-transparent text-sm outline-none" placeholder="Search products e.g. wireless headphones..." />
-            <Link href="/results" className="btn-primary">Search</Link>
+            <input
+              className="w-full border-none bg-transparent text-sm outline-none"
+              placeholder="Search products e.g. wireless headphones..."
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") runSearch();
+              }}
+            />
+            <button type="button" onClick={runSearch} className="btn-primary">Search</button>
           </div>
 
           <p className="mb-3 text-xs text-slate-500">Or ask naturally: list most discounted products in CJ or top rated electronics on Impact</p>
