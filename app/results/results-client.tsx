@@ -100,6 +100,10 @@ function normalizeTitle(title: string): string {
   return title.trim().toLowerCase();
 }
 
+function shouldValidateCjUrl(row: ResultRow): boolean {
+  return row.platform === "CJ" && row.companyName.trim().toUpperCase() === "NIKE";
+}
+
 function buildSelectionState(rows: ResultRow[]): Record<string, boolean> {
   const next: Record<string, boolean> = {};
   rows.forEach((row) => {
@@ -142,16 +146,9 @@ function dedupeByTitle(rows: ResultRow[]): ResultRow[] {
     }
   }
 
-  const cjById = new Map<string, ResultRow>();
-  for (const row of cjByTitle.values()) {
-    const key = `cj-id:${row.id}`;
-    const existing = cjById.get(key);
-    if (!existing || row.discount > existing.discount) {
-      cjById.set(key, row);
-    }
-  }
-
-  return [...Array.from(cjById.values()), ...Array.from(impactUnique.values())];
+  // CJ id-level dedupe intentionally disabled for now.
+  // NIKE URL validation remains active separately.
+  return [...Array.from(cjByTitle.values()), ...Array.from(impactUnique.values())];
 }
 
 async function fetchImpactPage(keyword: string, offset: number): Promise<{ rows: ResultRow[]; nextOffset: number; hasMore: boolean }> {
@@ -376,6 +373,10 @@ export default function ResultsClientPage() {
     candidateRows
       .filter((row) => row.platform === "CJ" && Boolean(row.productUrl))
       .forEach((row) => {
+        if (!shouldValidateCjUrl(row)) {
+          validIds.push(row.id);
+          return;
+        }
         const cached = cjLinkHealthCacheRef.current.get(row.productUrl);
         if (cached === true) {
           validIds.push(row.id);
@@ -578,6 +579,7 @@ export default function ResultsClientPage() {
       rows.filter((row) => {
         if (!ENABLE_CJ_LINK_VALIDATION) return true;
         if (row.platform !== "CJ") return true;
+        if (!shouldValidateCjUrl(row)) return true;
         return cjValidationState[row.id] === "valid";
       }),
     [cjValidationState, rows]
