@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pipeline — Affiliate Autoposter</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <style>
+    /* Overall status banner */
+    .status-banner {
+      border-radius: var(--radius-lg);
+      padding: 16px 20px;
+      display: flex; align-items: center; gap: 14px;
+      margin-bottom: 20px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+    .status-banner.running { border-color: #93C5FD; background: #EFF6FF; }
+    .status-banner.done    { border-color: #A7F3D0; background: var(--green-lt); }
+    .status-banner.idle    { background: var(--bg-card); }
+
+    .status-icon {
+      width: 44px; height: 44px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; flex-shrink: 0;
+      background: var(--blue-lt); color: var(--blue);
+    }
+    .status-banner.done .status-icon { background: var(--green-lt); color: var(--green); }
+
+    /* Product accordion */
+    .prod-pipeline {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .prod-pipeline-head {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 16px; cursor: pointer;
+      border-bottom: 1px solid var(--border);
+      transition: background .15s;
+    }
+    .prod-pipeline-head:hover { background: var(--bg-hover); }
+    .prod-pipeline-head.open  { border-bottom: 1px solid var(--border); }
+    .prod-pipeline-body       { padding: 14px 16px; }
+
+    .prod-status-pill {
+      font-size: 11px; font-weight: 600; padding: 3px 9px;
+      border-radius: var(--radius-pill);
+    }
+    .prod-status-pill.waiting  { background: var(--bg); color: var(--text-3); border: 1px solid var(--border); }
+    .prod-status-pill.running  { background: var(--blue-lt); color: var(--blue); }
+    .prod-status-pill.done     { background: var(--green-lt); color: var(--green); }
+    .prod-status-pill.error    { background: var(--red-lt); color: var(--red); }
+
+    /* Result card after completion */
+    .result-card {
+      background: var(--green-lt);
+      border: 1px solid #A7F3D0;
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      margin-top: 12px;
+      font-size: 12px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .result-card a { color: var(--blue); font-weight: 500; }
+
+    /* Log stream */
+    .log-stream {
+      background: #0F172A;
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: #94A3B8;
+      max-height: 160px;
+      overflow-y: auto;
+      line-height: 1.8;
+    }
+    .log-ok   { color: #4ADE80; }
+    .log-info { color: #60A5FA; }
+    .log-warn { color: #FBBF24; }
+    .log-err  { color: #F87171; }
+
+    /* Mini step in accordion */
+    .mini-step {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .mini-step:last-child { border-bottom: none; }
+    .mini-dot {
+      width: 20px; height: 20px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 600; flex-shrink: 0;
+      border: 1.5px solid var(--border);
+      background: var(--bg); color: var(--text-3);
+    }
+    .mini-dot.done    { background: var(--green); border-color: var(--green); color: #fff; }
+    .mini-dot.running { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .mini-dot.error   { background: var(--red); border-color: var(--red); color: #fff; }
+
+    .mini-step-name { flex: 1; color: var(--text); }
+    .mini-step-name.muted { color: var(--text-3); }
+    .mini-step-time { font-size: 11px; color: var(--text-3); }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="shell-nav">
+  <div class="logo"><div class="logo-dot">A</div>Affiliate Autoposter</div>
+  <div class="nav-right">
+    <a class="btn btn-sm" href="./history.html">View history</a>
+    <a class="btn btn-sm" href="./search.html">New search</a>
+  </div>
+</nav>
+
+<!-- STEPPER -->
+<div class="stepper-bar">
+  <div class="stepper">
+    <a class="step-item done"   href="./search.html">  <div class="step-circle">✓</div><span class="step-label">Search</span></a>
+    <a class="step-item done"   href="./results.html"> <div class="step-circle">✓</div><span class="step-label">Results</span></a>
+    <a class="step-item done"   href="./review.html">  <div class="step-circle">✓</div><span class="step-label">Review</span></a>
+    <a class="step-item done"   href="./template.html"><div class="step-circle">✓</div><span class="step-label">Template</span></a>
+    <a class="step-item done"   href="./package.html"> <div class="step-circle">✓</div><span class="step-label">Post package</span></a>
+    <a class="step-item active" href="./pipeline.html"><div class="step-circle">6</div><span class="step-label">Pipeline</span></a>
+  </div>
+</div>
+
+<!-- PAGE -->
+<div style="display:grid;grid-template-columns:1fr 320px;min-height:calc(100vh - var(--nav-h) - var(--stepper-h));gap:0;">
+
+  <!-- LEFT: Per-product trackers -->
+  <div style="padding:24px;border-right:1px solid var(--border);overflow-y:auto;">
+
+    <!-- Status banner (idle state) -->
+    <div class="status-banner idle" id="status-banner">
+      <div class="status-icon" id="status-icon">⏸</div>
+      <div>
+        <div style="font-size:14px;font-weight:600;color:var(--text);" id="status-title">Ready to start</div>
+        <div style="font-size:13px;color:var(--text-3);margin-top:2px;" id="status-sub">2 products queued · Review the options on the right and click Start pipeline</div>
+      </div>
+      <div style="margin-left:auto;">
+        <button class="btn btn-primary btn-lg" id="start-btn" onclick="startPipeline()">▶ Start pipeline</button>
+      </div>
+    </div>
+
+    <!-- Overall progress bar -->
+    <div style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-3);margin-bottom:6px;">
+        <span>Overall progress</span>
+        <span id="overall-label">0 / 8 steps</span>
+      </div>
+      <div class="prog-track">
+        <div class="prog-fill" id="overall-prog" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Product 1 accordion -->
+    <div class="prod-pipeline" id="prod-1-card">
+      <div class="prod-pipeline-head open" onclick="toggleAccordion('acc-1')">
+        <div style="font-size:20px;">🎧</div>
+        <div style="flex:1;">
+          <div style="font-size:14px;font-weight:600;color:var(--text);">Sony WH-1000XM5</div>
+          <div style="font-size:12px;color:var(--text-3);">CJ Affiliate · $279.99</div>
+        </div>
+        <span class="prod-status-pill waiting" id="prod-1-pill">Waiting</span>
+        <span style="color:var(--text-3);font-size:12px;" id="acc-1-arrow">▼</span>
+      </div>
+      <div class="prod-pipeline-body" id="acc-1">
+        <!-- 4 mini steps -->
+        <div class="mini-step">
+          <div class="mini-dot" id="p1s1-dot">1</div>
+          <span class="mini-step-name muted" id="p1s1-name">Generate post package (GPT)</span>
+          <span class="mini-step-time" id="p1s1-time">—</span>
+        </div>
+        <div class="mini-step">
+          <div class="mini-dot" id="p1s2-dot">2</div>
+          <span class="mini-step-name muted" id="p1s2-name">Download &amp; edit image</span>
+          <span class="mini-step-time" id="p1s2-time">—</span>
+        </div>
+        <div class="mini-step">
+          <div class="mini-dot" id="p1s3-dot">3</div>
+          <span class="mini-step-name muted" id="p1s3-name">Create WordPress post</span>
+          <span class="mini-step-time" id="p1s3-time">—</span>
+        </div>
+        <div class="mini-step">
+          <div class="mini-dot" id="p1s4-dot">4</div>
+          <span class="mini-step-name muted" id="p1s4-name">Schedule to Metricool</span>
+          <span class="mini-step-time" id="p1s4-time">—</span>
+        </div>
+        <!-- Result card (hidden until done) -->
+        <div class="result-card" id="p1-result" style="display:none;">
+          <div style="font-weight:600;color:var(--green);">✓ Published successfully</div>
+          <div>WordPress post: <a href="#">#4822 — Sony WH-1000XM5 Review</a></div>
+          <div>Metricool scheduled: <span style="color:var(--text-2);">Tomorrow 9:00 AM</span></div>
+          <div>Image: <a href="#">Feed Post applied ↗</a></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Product 2 accordion -->
+    <div class="prod-pipeline" id="prod-2-card">
+      <div class="prod-pipeline-head open" onclick="toggleAccordion('acc-2')">
+        <div style="font-size:20px;">🖱️</div>
+        <div style="flex:1;">
+          <div style="font-size:14px;font-weight:600;color:var(--text);">Logitech MX Master 3S</div>
+          <div style="font-size:12px;color:var(--text-3);">Impact · $89.99</div>
+        </div>
+        <span class="prod-status-pill waiting" id="prod-2-pill">Waiting</span>
+        <span style="color:var(--text-3);font-size:12px;" id="acc-2-arrow">▼</span>
+      </div>
+      <div class="prod-pipeline-body" id="acc-2">
+        <div class="mini-step">
+          <div class="mini-dot" id="p2s1-dot">1</div>
+          <span class="mini-step-name muted" id="p2s1-name">Generate post package (GPT)</span>
+          <span class="mini-step-time" id="p2s1-time">—</span>
+        </div>
+        <div class="mini-step">
+          <div class="mini-dot" id="p2s2-dot">2</div>
+          <span class="mini-step-name muted" id="p2s2-name">Download &amp; edit image</span>
+          <span class="mini-step-time" id="p2s2-time">—</span>
+        </div>
+        <div class="mini-step">
+          <div class="mini-dot" id="p2s3-dot">3</div>
+          <span class="mini-step-name muted" id="p2s3-name">Create WordPress post</span>
+          <span class="mini-step-time" id="p2s3-time">—</span>
+        </div>
+        <div class="mini-step">
+          <div class="mini-dot" id="p2s4-dot">4</div>
+          <span class="mini-step-name muted" id="p2s4-name">Schedule to Metricool</span>
+          <span class="mini-step-time" id="p2s4-time">—</span>
+        </div>
+        <div class="result-card" id="p2-result" style="display:none;">
+          <div style="font-weight:600;color:var(--green);">✓ Published successfully</div>
+          <div>WordPress post: <a href="#">#4823 — Logitech MX Master 3S Review</a></div>
+          <div>Metricool scheduled: <span style="color:var(--text-2);">Tomorrow 11:00 AM</span></div>
+          <div>Image: <a href="#">Feed Post applied ↗</a></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log stream (visible after start) -->
+    <div id="log-section" style="display:none;margin-top:20px;">
+      <div class="section-title" style="margin-bottom:8px;">Live log</div>
+      <div class="log-stream" id="log-stream"></div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT: Summary + config -->
+  <div style="padding:20px;background:var(--bg);overflow-y:auto;">
+
+    <div class="section-title" style="margin-bottom:14px;">Run summary</div>
+
+    <!-- Stat grid -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+      <div class="card card-pad" style="text-align:center;">
+        <div style="font-size:22px;font-weight:700;color:var(--text);" id="stat-total">2</div>
+        <div style="font-size:11px;color:var(--text-3);">Products</div>
+      </div>
+      <div class="card card-pad" style="text-align:center;">
+        <div style="font-size:22px;font-weight:700;color:var(--green);" id="stat-done">0</div>
+        <div style="font-size:11px;color:var(--text-3);">Completed</div>
+      </div>
+      <div class="card card-pad" style="text-align:center;">
+        <div style="font-size:22px;font-weight:700;color:var(--red);" id="stat-err">0</div>
+        <div style="font-size:11px;color:var(--text-3);">Errors</div>
+      </div>
+      <div class="card card-pad" style="text-align:center;">
+        <div style="font-size:22px;font-weight:700;color:var(--text-2);" id="stat-time">—</div>
+        <div style="font-size:11px;color:var(--text-3);">Elapsed</div>
+      </div>
+    </div>
+
+    <!-- Config recap -->
+    <div class="card card-pad" style="margin-bottom:14px;">
+      <div class="section-title" style="margin-bottom:10px;">Configuration</div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:6px 0;border-bottom:1px solid var(--border);">
+        <span style="color:var(--text-3);">Template</span><strong>Feed Post</strong>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:6px 0;border-bottom:1px solid var(--border);">
+        <span style="color:var(--text-3);">WordPress</span><span style="color:var(--green);font-weight:500;">On</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:6px 0;border-bottom:1px solid var(--border);">
+        <span style="color:var(--text-3);">Metricool</span><span style="color:var(--green);font-weight:500;">On</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:6px 0;">
+        <span style="color:var(--text-3);">GPT content</span><span style="color:var(--green);font-weight:500;">On</span>
+      </div>
+    </div>
+
+    <!-- Edit shortcuts -->
+    <div class="card card-pad" style="margin-bottom:16px;">
+      <div class="section-title" style="margin-bottom:10px;">Edit previous step</div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <a class="btn btn-sm" href="./review.html"   style="justify-content:space-between;">Products <span>→</span></a>
+        <a class="btn btn-sm" href="./template.html" style="justify-content:space-between;">Template <span>→</span></a>
+        <a class="btn btn-sm" href="./package.html"  style="justify-content:space-between;">Post package <span>→</span></a>
+      </div>
+    </div>
+
+    <button class="btn btn-primary btn-lg" id="right-start-btn" style="width:100%;" onclick="startPipeline()">
+      ▶ Start pipeline
+    </button>
+
+  </div>
+
+</div>
+
+<script>
+  let running = false;
+  let elapsed = 0;
+  let timer;
+
+  function toggleAccordion(id) {
+    const body  = document.getElementById(id);
+    const arrow = document.getElementById(id+'-arrow');
+    const vis = body.style.display !== 'none';
+    body.style.display = vis ? 'none' : 'block';
+    arrow.textContent  = vis ? '▶' : '▼';
+  }
+
+  const steps = [
+    { dot:'p1s1-dot', name:'p1s1-name', time:'p1s1-time', label:'GPT: generating package…', done:'GPT package generated', ms:1800 },
+    { dot:'p1s2-dot', name:'p1s2-name', time:'p1s2-time', label:'Downloading image…', done:'Image edited', ms:1400 },
+    { dot:'p1s3-dot', name:'p1s3-name', time:'p1s3-time', label:'Publishing to WordPress…', done:'WP post #4822 created', ms:2000 },
+    { dot:'p1s4-dot', name:'p1s4-name', time:'p1s4-time', label:'Scheduling to Metricool…', done:'Scheduled: Tomorrow 9 AM', ms:1200 },
+    { dot:'p2s1-dot', name:'p2s1-name', time:'p2s1-time', label:'GPT: generating package…', done:'GPT package generated', ms:1600 },
+    { dot:'p2s2-dot', name:'p2s2-name', time:'p2s2-time', label:'Downloading image…', done:'Image edited', ms:1300 },
+    { dot:'p2s3-dot', name:'p2s3-name', time:'p2s3-time', label:'Publishing to WordPress…', done:'WP post #4823 created', ms:1900 },
+    { dot:'p2s4-dot', name:'p2s4-name', time:'p2s4-time', label:'Scheduling to Metricool…', done:'Scheduled: Tomorrow 11 AM', ms:1100 },
+  ];
+
+  const logs = [
+    ['info','Pipeline started for 2 products'],
+    ['info','[Sony] Fetching product data from CJ API…'],
+    ['ok','[Sony] Product data retrieved'],
+    ['info','[Sony] Calling GPT-4 to generate post package…'],
+    ['ok','[Sony] Post package generated (title, desc, tags, CTA)'],
+    ['info','[Sony] Downloading product image…'],
+    ['ok','[Sony] Image downloaded — applying Feed Post template via Renderform'],
+    ['ok','[Sony] Image ready'],
+    ['info','[Sony] Creating WordPress draft post…'],
+    ['ok','[Sony] WordPress post created → #4822'],
+    ['info','[Sony] Sending to Metricool for scheduling…'],
+    ['ok','[Sony] Scheduled: tomorrow 9:00 AM'],
+    ['info','[Logitech] Fetching product data from Impact API…'],
+    ['ok','[Logitech] Product data retrieved'],
+    ['info','[Logitech] Calling GPT-4 to generate post package…'],
+    ['ok','[Logitech] Post package generated'],
+    ['ok','[Logitech] Image ready'],
+    ['ok','[Logitech] WordPress post created → #4823'],
+    ['ok','[Logitech] Scheduled: tomorrow 11:00 AM'],
+    ['ok','Pipeline complete — 2/2 products published successfully ✓'],
+  ];
+
+  async function startPipeline() {
+    if (running) return;
+    running = true;
+    document.getElementById('start-btn').disabled     = true;
+    document.getElementById('right-start-btn').disabled = true;
+    document.getElementById('start-btn').textContent  = '⏳ Running…';
+
+    // Status banner → running
+    const banner = document.getElementById('status-banner');
+    banner.className = 'status-banner running';
+    document.getElementById('status-icon').textContent  = '⏳';
+    document.getElementById('status-title').textContent = 'Pipeline running…';
+    document.getElementById('status-sub').textContent   = 'Processing 2 products — please wait';
+
+    document.getElementById('log-section').style.display = 'block';
+
+    // Pill → running for prod 1
+    setProductStatus(1,'running');
+
+    // Elapsed timer
+    timer = setInterval(() => {
+      elapsed++;
+      document.getElementById('stat-time').textContent = elapsed + 's';
+    }, 1000);
+
+    let logIdx = 0;
+    const addLog = (type, msg) => {
+      const el = document.getElementById('log-stream');
+      const line = document.createElement('div');
+      line.className = 'log-' + type;
+      line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    };
+
+    // Drip logs while steps run
+    const dripInterval = setInterval(() => {
+      if (logIdx < logs.length - 1) { addLog(logs[logIdx][0], logs[logIdx][1]); logIdx++; }
+    }, 900);
+
+    // Simulate steps
+    let done = 0;
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      setStepStatus(s, 'running');
+      if (i === 4) { setProductStatus(1,'done'); setProductStatus(2,'running'); document.getElementById('p1-result').style.display='flex'; document.getElementById('stat-done').textContent='1'; }
+      await delay(s.ms);
+      setStepStatus(s, 'done');
+      done++;
+      document.getElementById('overall-prog').style.width = (done/8*100) + '%';
+      document.getElementById('overall-label').textContent = done + ' / 8 steps';
+    }
+
+    clearInterval(dripInterval);
+    while (logIdx < logs.length) { addLog(logs[logIdx][0], logs[logIdx][1]); logIdx++; }
+    clearInterval(timer);
+
+    // Final state
+    setProductStatus(2,'done');
+    document.getElementById('p2-result').style.display = 'flex';
+    document.getElementById('stat-done').textContent = '2';
+    banner.className = 'status-banner done';
+    document.getElementById('status-icon').textContent  = '✓';
+    document.getElementById('status-title').textContent = 'Pipeline complete!';
+    document.getElementById('status-sub').textContent   = '2 of 2 products published successfully';
+    document.getElementById('start-btn').textContent    = '✓ Done';
+    document.getElementById('right-start-btn').textContent = '✓ Complete';
+  }
+
+  function setProductStatus(n, state) {
+    const pill = document.getElementById('prod-'+n+'-pill');
+    pill.className = 'prod-status-pill ' + state;
+    pill.textContent = { waiting:'Waiting', running:'Running…', done:'Done', error:'Error' }[state];
+  }
+
+  function setStepStatus(s, state) {
+    const dot  = document.getElementById(s.dot);
+    const name = document.getElementById(s.name);
+    if (state === 'running') {
+      dot.className  = 'mini-dot running';
+      dot.textContent = '↻';
+      name.className  = 'mini-step-name';
+      name.textContent = s.label;
+    } else if (state === 'done') {
+      dot.className  = 'mini-dot done';
+      dot.textContent = '✓';
+      name.className  = 'mini-step-name';
+      name.textContent = s.done;
+      document.getElementById(s.time).textContent = elapsed + 's';
+    }
+  }
+
+  function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+</script>
+</body>
+</html>

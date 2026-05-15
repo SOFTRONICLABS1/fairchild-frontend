@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Settings — Affiliate Autoposter</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <style>
+    .settings-layout {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      min-height: calc(100vh - var(--nav-h) - var(--stepper-h));
+    }
+
+    .settings-nav { padding: 20px 0; border-right: 1px solid var(--border); background: var(--bg-card); }
+    .settings-nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 18px; font-size: 13px; font-weight: 500;
+      color: var(--text-2); cursor: pointer; transition: all .15s;
+      border-right: 2px solid transparent;
+    }
+    .settings-nav-item:hover { background: var(--bg-hover); color: var(--text); }
+    .settings-nav-item.active { color: var(--blue); background: var(--blue-lt); border-right-color: var(--blue); }
+
+    .settings-panel { display: none; padding: 28px 32px; }
+    .settings-panel.active { display: block; }
+
+    .settings-section-title {
+      font-size: 16px; font-weight: 600; color: var(--text);
+      margin-bottom: 4px;
+    }
+    .settings-section-sub {
+      font-size: 13px; color: var(--text-3); margin-bottom: 24px;
+    }
+
+    /* Model selector */
+    .model-option {
+      display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+      border: 1.5px solid var(--border); border-radius: var(--radius-md);
+      cursor: pointer; margin-bottom: 8px; transition: all .15s;
+    }
+    .model-option:hover { border-color: #93B8D8; }
+    .model-option.selected { border-color: var(--blue); background: var(--bg-selected); }
+    .model-option input[type=radio] { accent-color: var(--blue); }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="shell-nav">
+  <div class="logo"><div class="logo-dot">A</div>Affiliate Autoposter</div>
+  <div class="nav-right">
+    <div class="nav-status"><div class="nav-status-dot"></div>All systems live</div>
+    <a class="btn btn-sm" href="./search.html">← Back to search</a>
+  </div>
+</nav>
+
+<!-- STEPPER (utility page) -->
+<div class="stepper-bar">
+  <div class="stepper">
+    <a class="step-item" href="./search.html">  <div class="step-circle">1</div><span class="step-label">Search</span></a>
+    <a class="step-item" href="./results.html"> <div class="step-circle">2</div><span class="step-label">Results</span></a>
+    <a class="step-item" href="./review.html">  <div class="step-circle">3</div><span class="step-label">Review</span></a>
+    <a class="step-item" href="./template.html"><div class="step-circle">4</div><span class="step-label">Template</span></a>
+    <a class="step-item" href="./package.html"> <div class="step-circle">5</div><span class="step-label">Post package</span></a>
+    <a class="step-item" href="./pipeline.html"><div class="step-circle">6</div><span class="step-label">Pipeline</span></a>
+  </div>
+</div>
+
+<div class="settings-layout">
+
+  <!-- Left nav -->
+  <nav class="settings-nav">
+    <div style="padding:12px 18px 10px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);">Platforms</div>
+    <div class="settings-nav-item active" onclick="switchPanel('platforms',this)">🔗 Connections</div>
+    <div class="settings-nav-item" onclick="switchPanel('gpt',this)">✦ GPT / AI</div>
+
+    <div style="padding:16px 18px 10px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-top:8px;">Publishing</div>
+    <div class="settings-nav-item" onclick="switchPanel('templates',this)">🖼 Templates</div>
+    <div class="settings-nav-item" onclick="switchPanel('pipeline-defaults',this)">⚙️ Pipeline defaults</div>
+
+    <div style="padding:16px 18px 10px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-top:8px;">Account</div>
+    <div class="settings-nav-item" onclick="switchPanel('account',this)">👤 Account</div>
+  </nav>
+
+  <!-- Panels -->
+  <div style="overflow-y:auto;">
+
+    <!-- Platform connections -->
+    <div class="settings-panel active" id="panel-platforms">
+
+      <div class="settings-section-title">Platform connections</div>
+      <div class="settings-section-sub">Connect your affiliate and publishing platforms. Credentials are stored encrypted.</div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+
+        <!-- CJ Affiliate -->
+        <div class="cred-card">
+          <div class="cred-header">
+            <div class="cred-identity">
+              <div class="cred-icon" style="background:var(--blue-lt);color:var(--blue-dk);">CJ</div>
+              <div><div class="cred-name">CJ Affiliate</div><div class="cred-sub">Commission Junction</div></div>
+            </div>
+            <div class="conn-dot on"><div class="dot dot-on"></div>Connected</div>
+          </div>
+          <div class="cred-body">
+            <div class="field-group">
+              <label class="field-label">API Key</label>
+              <div class="input-wrap">
+                <input class="field field-mono" type="password" value="cj_api_k3y_example123" id="cj-key" />
+                <button class="input-icon-right" onclick="togglePass('cj-key',this)">👁</button>
+              </div>
+            </div>
+            <div class="field-group">
+              <label class="field-label">Advertiser ID</label>
+              <input class="field" type="text" value="4821094" />
+            </div>
+          </div>
+          <div class="cred-footer">
+            <span style="font-size:12px;color:var(--text-3);">Last tested: Today</span>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm" onclick="testConn(this)">Test</button>
+              <button class="btn btn-primary btn-sm">Save</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Impact -->
+        <div class="cred-card">
+          <div class="cred-header">
+            <div class="cred-identity">
+              <div class="cred-icon" style="background:var(--purple-lt);color:var(--purple);">IM</div>
+              <div><div class="cred-name">Impact</div><div class="cred-sub">Impact.com partnerships</div></div>
+            </div>
+            <div class="conn-dot on"><div class="dot dot-on"></div>Connected</div>
+          </div>
+          <div class="cred-body">
+            <div class="field-group">
+              <label class="field-label">Account SID</label>
+              <input class="field" type="text" value="IRJz7492..." />
+            </div>
+            <div class="field-group">
+              <label class="field-label">Auth Token</label>
+              <div class="input-wrap">
+                <input class="field field-mono" type="password" value="impact_auth_t0k3n_here" id="imp-tok" />
+                <button class="input-icon-right" onclick="togglePass('imp-tok',this)">👁</button>
+              </div>
+            </div>
+          </div>
+          <div class="cred-footer">
+            <span style="font-size:12px;color:var(--text-3);">Last tested: Today</span>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm" onclick="testConn(this)">Test</button>
+              <button class="btn btn-primary btn-sm">Save</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- WordPress -->
+        <div class="cred-card">
+          <div class="cred-header">
+            <div class="cred-identity">
+              <div class="cred-icon" style="background:#F0F4F8;color:#21759B;">WP</div>
+              <div><div class="cred-name">WordPress</div><div class="cred-sub">WooCommerce REST API</div></div>
+            </div>
+            <div class="conn-dot on"><div class="dot dot-on"></div>Connected</div>
+          </div>
+          <div class="cred-body">
+            <div class="field-group">
+              <label class="field-label">Site domain</label>
+              <input class="field" type="text" value="https://myblog.com" />
+            </div>
+            <div class="two-col">
+              <div class="field-group">
+                <label class="field-label">Consumer Key</label>
+                <input class="field field-mono" type="password" value="ck_abc123" />
+              </div>
+              <div class="field-group">
+                <label class="field-label">Consumer Secret</label>
+                <input class="field field-mono" type="password" value="cs_xyz789" />
+              </div>
+            </div>
+            <div class="field-group">
+              <label class="field-label">Default post status</label>
+              <select class="field" style="font-size:12px;">
+                <option>Draft</option>
+                <option selected>Publish immediately</option>
+                <option>Pending review</option>
+              </select>
+            </div>
+          </div>
+          <div class="cred-footer">
+            <span style="font-size:12px;color:var(--text-3);">Last tested: Yesterday</span>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm" onclick="testConn(this)">Test</button>
+              <button class="btn btn-primary btn-sm">Save</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Metricool -->
+        <div class="cred-card">
+          <div class="cred-header">
+            <div class="cred-identity">
+              <div class="cred-icon" style="background:#FFF7ED;color:#C2410C;">MC</div>
+              <div><div class="cred-name">Metricool</div><div class="cred-sub">Social scheduling</div></div>
+            </div>
+            <div class="conn-dot on"><div class="dot dot-on"></div>Connected</div>
+          </div>
+          <div class="cred-body">
+            <div class="field-group">
+              <label class="field-label">Auth token</label>
+              <div class="input-wrap">
+                <input class="field field-mono" type="password" value="mc_auth_t0k3n_here" id="mc-tok" />
+                <button class="input-icon-right" onclick="togglePass('mc-tok',this)">👁</button>
+              </div>
+            </div>
+            <div class="field-group">
+              <label class="field-label">Default schedule time</label>
+              <input class="field" type="time" value="09:00" />
+            </div>
+          </div>
+          <div class="cred-footer">
+            <span style="font-size:12px;color:var(--text-3);">Last tested: Today</span>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm" onclick="testConn(this)">Test</button>
+              <button class="btn btn-primary btn-sm">Save</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Renderform -->
+        <div class="cred-card">
+          <div class="cred-header">
+            <div class="cred-identity">
+              <div class="cred-icon" style="background:#F5F3FF;color:#6D28D9;">RF</div>
+              <div><div class="cred-name">Renderform</div><div class="cred-sub">Image template engine</div></div>
+            </div>
+            <div class="conn-dot off"><div class="dot dot-off"></div>Not connected</div>
+          </div>
+          <div class="cred-body">
+            <div class="field-group">
+              <label class="field-label">API Key</label>
+              <input class="field field-mono" type="text" placeholder="rf_api_key_..." />
+            </div>
+          </div>
+          <div class="cred-footer">
+            <span style="font-size:12px;color:var(--text-3);">Not yet configured</span>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm" onclick="testConn(this)">Test</button>
+              <button class="btn btn-primary btn-sm">Save</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- GPT / AI Settings -->
+    <div class="settings-panel" id="panel-gpt">
+
+      <div class="settings-section-title">GPT / AI settings</div>
+      <div class="settings-section-sub">Configure how the AI generates post packages and processes natural language searches.</div>
+
+      <!-- API Key -->
+      <div class="card card-pad" style="margin-bottom:16px;">
+        <div style="font-size:14px;font-weight:600;margin-bottom:14px;">OpenAI credentials</div>
+        <div class="field-group">
+          <label class="field-label">OpenAI API key</label>
+          <div class="input-wrap">
+            <input class="field field-mono" type="password" value="sk-proj-abc123xyz..." id="oai-key" />
+            <button class="input-icon-right" onclick="togglePass('oai-key',this)">👁</button>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
+          <button class="btn btn-sm" onclick="testConn(this)">Test connection</button>
+          <button class="btn btn-primary btn-sm">Save</button>
+        </div>
+      </div>
+
+      <!-- Model selector -->
+      <div class="card card-pad" style="margin-bottom:16px;">
+        <div style="font-size:14px;font-weight:600;margin-bottom:14px;">Model</div>
+        <div class="model-option selected" onclick="selectModel(this)">
+          <input type="radio" name="model" checked />
+          <div>
+            <div style="font-weight:500;font-size:13px;">GPT-4o</div>
+            <div style="font-size:12px;color:var(--text-3);">Best quality — recommended for post generation</div>
+          </div>
+          <span class="pill pill-done" style="margin-left:auto;font-size:10px;">Recommended</span>
+        </div>
+        <div class="model-option" onclick="selectModel(this)">
+          <input type="radio" name="model" />
+          <div>
+            <div style="font-weight:500;font-size:13px;">GPT-4o mini</div>
+            <div style="font-size:12px;color:var(--text-3);">Faster and cheaper — good for search queries</div>
+          </div>
+        </div>
+        <div class="model-option" onclick="selectModel(this)">
+          <input type="radio" name="model" />
+          <div>
+            <div style="font-weight:500;font-size:13px;">GPT-3.5 Turbo</div>
+            <div style="font-size:12px;color:var(--text-3);">Most economical option</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tone / instructions -->
+      <div class="card card-pad" style="margin-bottom:16px;">
+        <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Default content instructions</div>
+        <div style="font-size:12px;color:var(--text-3);margin-bottom:12px;">This prompt is prepended to every AI generation request.</div>
+        <textarea class="field" rows="4" style="resize:vertical;">Write in a casual, enthusiastic tone for a tech-savvy audience. Always highlight the discount prominently. Include a clear call to action. Keep posts under 200 words. Use relevant hashtags for social captions.</textarea>
+        <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+          <button class="btn btn-primary btn-sm">Save instructions</button>
+        </div>
+      </div>
+
+      <!-- Toggles -->
+      <div class="card card-pad">
+        <div style="font-size:14px;font-weight:600;margin-bottom:4px;">AI features</div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">Natural language search</div>
+            <div class="toggle-sub">Parse plain English queries into product searches</div>
+          </div>
+          <label class="toggle"><input type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">Auto-generate post package</div>
+            <div class="toggle-sub">Pre-fill all fields when entering step 5</div>
+          </div>
+          <label class="toggle"><input type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">Auto-generate SEO slug</div>
+            <div class="toggle-sub">Generate URL-friendly slug from post title</div>
+          </div>
+          <label class="toggle"><input type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">GPT package.json generation</div>
+            <div class="toggle-sub">Use AI to generate structured post data (package.json format)</div>
+          </div>
+          <label class="toggle"><input type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Templates panel -->
+    <div class="settings-panel" id="panel-templates">
+      <div class="settings-section-title">Image templates</div>
+      <div class="settings-section-sub">Manage your Renderform image templates. Connect Renderform above to enable custom templates.</div>
+      <div class="card card-pad">
+        <div style="color:var(--text-3);font-size:13px;text-align:center;padding:24px 0;">
+          Connect Renderform in <strong style="color:var(--text-2);">Platform connections</strong> to manage custom templates here.
+        </div>
+      </div>
+    </div>
+
+    <!-- Pipeline defaults panel -->
+    <div class="settings-panel" id="panel-pipeline-defaults">
+      <div class="settings-section-title">Pipeline defaults</div>
+      <div class="settings-section-sub">Set the default options pre-selected when you start a pipeline run.</div>
+      <div class="card card-pad">
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">Create WordPress post</div>
+            <div class="toggle-sub">Default on for every run</div>
+          </div>
+          <label class="toggle"><input type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">Schedule to Metricool</div>
+            <div class="toggle-sub">Default on for every run</div>
+          </div>
+          <label class="toggle"><input type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">Edit image with Renderform</div>
+            <div class="toggle-sub">Apply template to product image</div>
+          </div>
+          <label class="toggle"><input type="checkbox" /><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">Auto-start on review confirm</div>
+            <div class="toggle-sub">Skip the Start button — run immediately</div>
+          </div>
+          <label class="toggle"><input type="checkbox" /><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Account panel -->
+    <div class="settings-panel" id="panel-account">
+      <div class="settings-section-title">Account</div>
+      <div class="settings-section-sub">Your plan and usage details.</div>
+      <div class="card card-pad" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);">
+          <span style="font-size:13px;color:var(--text-3);">Plan</span><strong>Pro</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);">
+          <span style="font-size:13px;color:var(--text-3);">Posts this month</span><strong>142 / unlimited</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;">
+          <span style="font-size:13px;color:var(--text-3);">GPT calls this month</span><strong>284</strong>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end panels -->
+
+</div><!-- end settings-layout -->
+
+<script>
+  function switchPanel(id, navItem) {
+    document.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById('panel-' + id).classList.add('active');
+    navItem.classList.add('active');
+  }
+
+  function togglePass(id, btn) {
+    const el = document.getElementById(id);
+    el.type = el.type === 'password' ? 'text' : 'password';
+  }
+
+  function testConn(btn) {
+    const orig = btn.textContent;
+    btn.textContent = 'Testing…';
+    btn.disabled = true;
+    setTimeout(() => {
+      btn.textContent = '✓ OK';
+      btn.style.color = 'var(--green)';
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; btn.style.color = ''; }, 2000);
+    }, 1200);
+  }
+
+  function selectModel(el) {
+    document.querySelectorAll('.model-option').forEach(o => o.classList.remove('selected'));
+    el.classList.add('selected');
+    el.querySelector('input[type=radio]').checked = true;
+  }
+</script>
+</body>
+</html>

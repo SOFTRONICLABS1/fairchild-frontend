@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>History — Affiliate Autoposter</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <style>
+    .hist-filter-row {
+      display: flex; gap: 6px; flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .hist-filter {
+      font-size: 12px; font-weight: 500; padding: 5px 12px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border); background: var(--bg-card);
+      color: var(--text-2); cursor: pointer; transition: all .15s;
+    }
+    .hist-filter.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+
+    .stat-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); padding: 16px 20px;
+      text-align: center;
+    }
+    .stat-n { font-size: 26px; font-weight: 700; color: var(--text); }
+    .stat-l { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+
+    .retry-btn {
+      font-size: 11px; font-weight: 600; padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border); background: var(--bg-card);
+      color: var(--text-2); cursor: pointer; transition: all .15s;
+    }
+    .retry-btn:hover { background: var(--blue-lt); color: var(--blue); border-color: var(--blue); }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="shell-nav">
+  <div class="logo"><div class="logo-dot">A</div>Affiliate Autoposter</div>
+  <div class="nav-right">
+    <div class="nav-status"><div class="nav-status-dot"></div>All systems live</div>
+    <a class="btn btn-sm" href="./search.html">+ New search</a>
+    <a class="btn btn-sm" href="./settings.html">Settings</a>
+  </div>
+</nav>
+
+<!-- STEPPER — not a step page, so all grey/idle -->
+<div class="stepper-bar">
+  <div class="stepper">
+    <a class="step-item" href="./search.html">  <div class="step-circle">1</div><span class="step-label">Search</span></a>
+    <a class="step-item" href="./results.html"> <div class="step-circle">2</div><span class="step-label">Results</span></a>
+    <a class="step-item" href="./review.html">  <div class="step-circle">3</div><span class="step-label">Review</span></a>
+    <a class="step-item" href="./template.html"><div class="step-circle">4</div><span class="step-label">Template</span></a>
+    <a class="step-item" href="./package.html"> <div class="step-circle">5</div><span class="step-label">Post package</span></a>
+    <a class="step-item" href="./pipeline.html"><div class="step-circle">6</div><span class="step-label">Pipeline</span></a>
+  </div>
+</div>
+
+<div class="page-wrap">
+
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px;">
+    <div>
+      <h2 style="font-size:18px;font-weight:600;margin-bottom:2px;">Post history</h2>
+      <p style="font-size:13px;color:var(--text-3);">All products published through Affiliate Autoposter</p>
+    </div>
+    <a class="btn btn-primary btn-sm" href="./search.html">+ New post run</a>
+  </div>
+
+  <!-- Stats row -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:24px;">
+    <div class="stat-card">
+      <div class="stat-n">142</div>
+      <div class="stat-l">Total posts</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-n" style="color:var(--green);">136</div>
+      <div class="stat-l">Succeeded</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-n" style="color:var(--red);">4</div>
+      <div class="stat-l">Failed</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-n" style="color:var(--blue);">2</div>
+      <div class="stat-l">Running</div>
+    </div>
+  </div>
+
+  <!-- Filter row -->
+  <div class="hist-filter-row">
+    <button class="hist-filter active" onclick="filterRows('all',this)">All (142)</button>
+    <button class="hist-filter" onclick="filterRows('success',this)">✓ Success (136)</button>
+    <button class="hist-filter" onclick="filterRows('failed',this)">✕ Failed (4)</button>
+    <button class="hist-filter" onclick="filterRows('running',this)">⏳ Running (2)</button>
+  </div>
+
+  <!-- Search + date -->
+  <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+    <div class="search-bar" style="flex:1;min-width:200px;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" placeholder="Search posts by product, platform…" />
+    </div>
+    <input class="field" type="date" style="width:auto;" value="2025-05-14" />
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Product</th>
+          <th>Platform</th>
+          <th>Template</th>
+          <th>WP post</th>
+          <th>Status</th>
+          <th>Date</th>
+          <th style="width:80px;"></th>
+        </tr>
+      </thead>
+      <tbody id="hist-body">
+
+        <tr data-status="success">
+          <td>
+            <div style="font-weight:500;">Sony WH-1000XM5</div>
+            <div style="font-size:11px;color:var(--text-3);">Wireless headphones</div>
+          </td>
+          <td><span class="badge badge-cj">CJ</span></td>
+          <td style="font-size:12px;color:var(--text-2);">Feed Post</td>
+          <td><a href="#" style="color:var(--blue);font-size:12px;">#4822</a></td>
+          <td><span class="pill pill-done">Success</span></td>
+          <td style="font-size:12px;color:var(--text-3);">Today, 10:41 AM</td>
+          <td style="text-align:right;"><button class="btn btn-ghost btn-sm">View</button></td>
+        </tr>
+
+        <tr data-status="success">
+          <td>
+            <div style="font-weight:500;">Logitech MX Master 3S</div>
+            <div style="font-size:11px;color:var(--text-3);">Productivity mouse</div>
+          </td>
+          <td><span class="badge badge-imp">Impact</span></td>
+          <td style="font-size:12px;color:var(--text-2);">Feed Post</td>
+          <td><a href="#" style="color:var(--blue);font-size:12px;">#4821</a></td>
+          <td><span class="pill pill-done">Success</span></td>
+          <td style="font-size:12px;color:var(--text-3);">Today, 10:41 AM</td>
+          <td style="text-align:right;"><button class="btn btn-ghost btn-sm">View</button></td>
+        </tr>
+
+        <tr data-status="running">
+          <td>
+            <div style="font-weight:500;">Jabra Evolve2 65</div>
+            <div style="font-size:11px;color:var(--text-3);">Business headset</div>
+          </td>
+          <td><span class="badge badge-cj">CJ</span></td>
+          <td style="font-size:12px;color:var(--text-2);">Blog Banner</td>
+          <td><span style="font-size:12px;color:var(--text-3);">Pending…</span></td>
+          <td><span class="pill" style="background:var(--blue-lt);color:var(--blue);">Running</span></td>
+          <td style="font-size:12px;color:var(--text-3);">Today, 10:38 AM</td>
+          <td style="text-align:right;"><button class="btn btn-ghost btn-sm">View</button></td>
+        </tr>
+
+        <tr data-status="failed">
+          <td>
+            <div style="font-weight:500;">Bose QuietComfort 45</div>
+            <div style="font-size:11px;color:var(--text-3);">Noise cancelling</div>
+          </td>
+          <td><span class="badge badge-imp">Impact</span></td>
+          <td style="font-size:12px;color:var(--text-2);">Story / Reel</td>
+          <td><span style="font-size:12px;color:var(--text-3);">—</span></td>
+          <td><span class="pill pill-err">Failed</span></td>
+          <td style="font-size:12px;color:var(--text-3);">Yesterday, 3:14 PM</td>
+          <td style="text-align:right;"><button class="retry-btn">↻ Retry</button></td>
+        </tr>
+
+        <tr data-status="success">
+          <td>
+            <div style="font-weight:500;">Apple AirPods Pro 2nd Gen</div>
+            <div style="font-size:11px;color:var(--text-3);">True wireless earbuds</div>
+          </td>
+          <td><span class="badge badge-cj">CJ</span></td>
+          <td style="font-size:12px;color:var(--text-2);">Price Deal</td>
+          <td><a href="#" style="color:var(--blue);font-size:12px;">#4819</a></td>
+          <td><span class="pill pill-done">Success</span></td>
+          <td style="font-size:12px;color:var(--text-3);">Yesterday, 11:02 AM</td>
+          <td style="text-align:right;"><button class="btn btn-ghost btn-sm">View</button></td>
+        </tr>
+
+        <tr data-status="failed">
+          <td>
+            <div style="font-weight:500;">Samsung Galaxy Buds 2 Pro</div>
+            <div style="font-size:11px;color:var(--text-3);">Wireless earbuds</div>
+          </td>
+          <td><span class="badge badge-imp">Impact</span></td>
+          <td style="font-size:12px;color:var(--text-2);">Feed Post</td>
+          <td><span style="font-size:12px;color:var(--text-3);">—</span></td>
+          <td><span class="pill pill-err">Failed</span></td>
+          <td style="font-size:12px;color:var(--text-3);">May 12, 9:55 AM</td>
+          <td style="text-align:right;"><button class="retry-btn">↻ Retry</button></td>
+        </tr>
+
+        <tr data-status="success">
+          <td>
+            <div style="font-weight:500;">Nike Air Zoom Pegasus 40</div>
+            <div style="font-size:11px;color:var(--text-3);">Running shoes</div>
+          </td>
+          <td><span class="badge badge-cj">CJ</span></td>
+          <td style="font-size:12px;color:var(--text-2);">Minimal Clean</td>
+          <td><a href="#" style="color:var(--blue);font-size:12px;">#4816</a></td>
+          <td><span class="pill pill-done">Success</span></td>
+          <td style="font-size:12px;color:var(--text-3);">May 12, 8:30 AM</td>
+          <td style="text-align:right;"><button class="btn btn-ghost btn-sm">View</button></td>
+        </tr>
+
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-size:13px;color:var(--text-3);">
+    <span>Showing 7 of 142 posts</span>
+    <div style="display:flex;gap:6px;">
+      <button class="btn btn-sm" disabled>← Prev</button>
+      <button class="btn btn-sm">Next →</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  function filterRows(status, btn) {
+    document.querySelectorAll('.hist-filter').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('#hist-body tr').forEach(row => {
+      row.style.display = (status === 'all' || row.dataset.status === status) ? '' : 'none';
+    });
+  }
+</script>
+</body>
+</html>

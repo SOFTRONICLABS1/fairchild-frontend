@@ -3,17 +3,21 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import TopNav from "@/components/flow/top-nav";
+import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 
 const PAGE_SIZE = 50;
 const API_PAGE_LIMIT = 100;
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const ENABLE_RESULTS_CACHE = false;
+const ENABLE_RESULTS_CACHE = true;
+const ENABLE_CJ_LINK_VALIDATION = false;
 
 type ResultRow = {
   rowKey: string;
   id: string;
   product: string;
+  companyName: string;
+  campaignId?: string;
   imageUrl: string;
   productUrl: string;
   platform: "CJ" | "Impact";
@@ -25,7 +29,11 @@ type CjProduct = {
   id: string;
   catalogId?: string;
   title: string;
+  advertiserName?: string;
   link: string;
+  linkCode?: {
+    clickUrl?: string;
+  };
   imageLink: string;
   price?: { amount?: string | number | null } | null;
   salePrice?: { amount?: string | number | null } | null;
@@ -34,7 +42,9 @@ type CjProduct = {
 type ImpactItem = {
   Id: string;
   CatalogId?: string;
+  CampaignId?: string;
   Name: string;
+  CampaignName?: string;
   Url?: string;
   ImageUrl: string;
   IsParent?: boolean;
@@ -56,6 +66,8 @@ type PlatformCursor = {
 
 type CachedSearchState = {
   rows: ResultRow[];
+  selectedIds: Record<string, boolean>;
+  page: number;
   cursor: PlatformCursor;
   loadedAt: number;
 };
@@ -77,6 +89,26 @@ function toCurrency(amount: number): string {
 
 function normalizeTitle(title: string): string {
   return title.trim().toLowerCase();
+}
+
+function buildSelectionState(rows: ResultRow[]): Record<string, boolean> {
+  const next: Record<string, boolean> = {};
+  rows.forEach((row) => {
+    next[row.id] = false;
+  });
+  try {
+    const rawSelected = sessionStorage.getItem("pipeline:selected-products");
+    if (!rawSelected) return next;
+    const selected = JSON.parse(rawSelected) as Array<{ id?: string }>;
+    selected.forEach((item) => {
+      if (item?.id && next[item.id] !== undefined) {
+        next[item.id] = true;
+      }
+    });
+  } catch {
+    // ignore
+  }
+  return next;
 }
 
 function dedupeByTitle(rows: ResultRow[]): ResultRow[] {
@@ -124,7 +156,6 @@ async function fetchImpactPage(keyword: string, offset: number): Promise<{ rows:
   const data = unwrapEnvelope<ImpactPayload>(payload.data);
   const items = Array.isArray(data.Items) ? data.Items : [];
   const rows = items
-    .filter((item) => item.IsParent === true)
     .map((item) => {
     const currentPrice = toNumber(item.CurrentPrice);
     const originalPrice = toNumber(item.OriginalPrice) || currentPrice;
@@ -132,6 +163,8 @@ async function fetchImpactPage(keyword: string, offset: number): Promise<{ rows:
       rowKey: `impact-${item.Id}-${item.CatalogId ?? ""}`,
       id: `impact-${item.Id}`,
       product: item.Name,
+      companyName: item.CampaignName ?? "",
+      campaignId: item.CampaignId,
       imageUrl: item.ImageUrl,
       productUrl: item.Url ?? "",
       platform: "Impact" as const,
@@ -179,8 +212,10 @@ async function fetchCjPage(
       rowKey: `cj-${item.id}-${item.catalogId ?? ""}-${index}`,
       id: `cj-${item.id}`,
       product: item.title,
+      companyName: item.advertiserName ?? "",
+      campaignId: undefined,
       imageUrl: item.imageLink,
-      productUrl: item.link,
+      productUrl: item.linkCode?.clickUrl || item.link,
       platform: "CJ" as const,
       price,
       discount: salePrice > 0 ? calculateDiscount(originalPrice, salePrice) : 0
@@ -221,6 +256,12 @@ export default function ResultsClientPage() {
     () => `results-cache:v1:${keyword}:${useCj ? "1" : "0"}:${useImpact ? "1" : "0"}`,
     [keyword, useCj, useImpact]
   );
+
+  useEffect(() => {
+    const params = searchParams.toString();
+    const href = params ? `/results?${params}` : "/results";
+    sessionStorage.setItem("pipeline:last-results-url", href);
+  }, [searchParams]);
 
   const throttleCj = async () => {
     const now = Date.now();
@@ -267,6 +308,10 @@ export default function ResultsClientPage() {
       }
     });
 
+    if (!ENABLE_CJ_LINK_VALIDATION) {
+      return { chunkRows, nextState, failures };
+    }
+
     const cjRows = chunkRows.filter((row) => row.platform === "CJ");
     const nonCjRows = chunkRows.filter((row) => row.platform !== "CJ");
     const validatedCjRows: ResultRow[] = [];
@@ -299,23 +344,18 @@ export default function ResultsClientPage() {
       setError(null);
       setPage(1);
       try {
-        if (!keyword) {
-          setRows([]);
-          setSelectedIds({});
-          setCursor({ cjOffset: 0, cjNextPage: null, cjHasMore: useCj, impactOffset: 0, impactHasMore: useImpact });
-          return;
-        }
+        const shouldRestore = sessionStorage.getItem("pipeline:allow-results-restore") === "1";
+        sessionStorage.removeItem("pipeline:allow-results-restore");
 
         if (ENABLE_RESULTS_CACHE) {
           const rawCache = sessionStorage.getItem(cacheKey);
-          if (rawCache) {
+          if (rawCache && shouldRestore) {
             const cached = JSON.parse(rawCache) as CachedSearchState;
             if (Date.now() - cached.loadedAt < CACHE_TTL_MS) {
               setRows(cached.rows);
               setCursor(cached.cursor);
-              const cachedSelection: Record<string, boolean> = {};
-              cached.rows.forEach((row) => { cachedSelection[row.id] = false; });
-              setSelectedIds(cachedSelection);
+              setSelectedIds(cached.selectedIds ?? buildSelectionState(cached.rows));
+              setPage(cached.page ?? 1);
               return;
             }
           }
@@ -332,8 +372,7 @@ export default function ResultsClientPage() {
         const deduped = dedupeByTitle(chunkRows);
         setRows(deduped);
         setCursor(nextState);
-        const initialSelection: Record<string, boolean> = {};
-        deduped.forEach((row) => { initialSelection[row.id] = false; });
+        const initialSelection = shouldRestore ? buildSelectionState(deduped) : Object.fromEntries(deduped.map((row) => [row.id, false]));
         setSelectedIds(initialSelection);
         if (failures.length) setError(failures.join(" | "));
         console.debug("[results] initial load completed", {
@@ -357,9 +396,9 @@ export default function ResultsClientPage() {
 
   useEffect(() => {
     if (!keyword || !ENABLE_RESULTS_CACHE) return;
-    const cachePayload: CachedSearchState = { rows, cursor, loadedAt: Date.now() };
+    const cachePayload: CachedSearchState = { rows, selectedIds, page, cursor, loadedAt: Date.now() };
     sessionStorage.setItem(cacheKey, JSON.stringify(cachePayload));
-  }, [cacheKey, cursor, keyword, rows]);
+  }, [cacheKey, cursor, keyword, page, rows, selectedIds]);
 
   const loadMore = async () => {
     setLoadingMore(true);
@@ -407,9 +446,15 @@ export default function ResultsClientPage() {
   );
 
   const handleBuildPostPackage = () => {
+    if (selectedRows.length === 0) {
+      setError("Select at least one product to continue to Review.");
+      return;
+    }
     const payload = selectedRows.map((row) => ({
       id: row.id,
       product: row.product,
+      companyName: row.companyName,
+      campaignId: row.campaignId,
       imageUrl: row.imageUrl,
       productUrl: row.productUrl,
       platform: row.platform,
@@ -417,23 +462,29 @@ export default function ResultsClientPage() {
       discount: row.discount
     }));
     sessionStorage.setItem("pipeline:selected-products", JSON.stringify(payload));
-    router.push("/pipeline");
+    router.push("/review");
   };
 
   return (
     <>
-      <TopNav right={<div className="text-sm text-slate-500">Search / <span className="font-medium text-slate-800">Results</span></div>} />
-      <div className="grid min-h-[calc(100vh-58px)] grid-cols-1 md:grid-cols-[220px_1fr]">
-        <aside className="border-r border-slate-200 bg-white p-4">
+      <TopNav />
+      <FlowStepper active={2} />
+      <div className="grid min-h-[calc(100vh-58px)] grid-cols-1 md:grid-cols-[260px_1fr]">
+        <aside className="border-r border-slate-200 bg-white p-5">
           <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Platform</p>
-          <div className="mb-5 flex gap-2 text-xs">
+          <div className="mb-6 flex flex-wrap gap-2 text-xs">
             {useCj ? <span className="badge badge-cj">CJ</span> : null}
             {useImpact ? <span className="badge badge-imp">Impact</span> : null}
             {useCj && useImpact ? <span className="rounded-full border px-2 py-[2px] text-[11px] text-slate-500">Both</span> : null}
           </div>
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Result info</p>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+            <p>Page: <span className="font-medium text-slate-800">{page}</span></p>
+            <p className="mt-1">Loaded: <span className="font-medium text-slate-800">{rows.length}</span></p>
+          </div>
         </aside>
 
-        <main className="p-4 md:p-6">
+        <main className="p-4 pb-24 md:p-6 md:pb-24">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <input className="field w-full max-w-md" value={`Results for "${keyword || "all products"}"`} readOnly />
           </div>
@@ -442,38 +493,54 @@ export default function ResultsClientPage() {
           </p>
           {error ? <p className="mb-2 text-sm text-red-600">{error}</p> : null}
 
+          {loading ? (
+            <div className="grid min-h-[340px] place-items-center rounded-xl border border-slate-200 bg-white">
+              <div className="flex flex-col items-center gap-3">
+                <span className="h-8 w-8 animate-spin rounded-full border-2 border-slate-300 border-t-[#185FA5]" />
+                <p className="text-sm font-medium text-slate-600">Loading Products</p>
+              </div>
+            </div>
+          ) : (
           <div className="overflow-auto rounded-xl border border-slate-200 bg-white">
-            <table className="w-full min-w-[980px] border-collapse">
+            <table className="w-full min-w-[860px] border-collapse table-fixed">
               <thead className="bg-slate-50 text-left text-xs text-slate-500">
                 <tr>
-                  <th className="p-3">Product</th>
-                  <th>Image</th>
-                  <th>Platform</th>
-                  <th>Price</th>
-                  <th>Discount</th>
-                  <th className="pr-3 text-right">Select</th>
+                  <th className="w-[42px] p-2 pl-3 text-left">
+                    <input
+                      type="checkbox"
+                      checked={visibleRows.length > 0 && visibleRows.every((row) => Boolean(selectedIds[row.id]))}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setSelectedIds((prev) => {
+                          const next = { ...prev };
+                          visibleRows.forEach((row) => {
+                            next[row.id] = checked;
+                          });
+                          return next;
+                        });
+                      }}
+                    />
+                  </th>
+                  <th className="w-[72px] p-2 text-left">Image</th>
+                  <th className="w-[34%]">Product</th>
+                  <th className="w-[120px]">Platform</th>
+                  <th className="w-[110px]">Price</th>
+                  <th className="w-[110px]">Discount</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleRows.map((row) => (
                   <tr key={row.rowKey}>
-                    <td className="border-t border-slate-200 p-3">
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium">{row.product}</p>
-                        {row.productUrl ? (
-                          <a
-                            href={row.productUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-slate-500 hover:text-slate-700"
-                            title="Open product page"
-                          >
-                            ↗
-                          </a>
-                        ) : null}
-                      </div>
+                    <td className="border-t border-slate-200 p-2 pl-3 text-left">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selectedIds[row.id])}
+                        onChange={(event) =>
+                          setSelectedIds((prev) => ({ ...prev, [row.id]: event.target.checked }))
+                        }
+                      />
                     </td>
-                    <td className="border-t border-slate-200 text-sm">
+                    <td className="border-t border-slate-200 p-2 text-left text-sm">
                       {row.imageUrl ? (
                         <button
                           type="button"
@@ -493,21 +560,31 @@ export default function ResultsClientPage() {
                         <div className="h-12 w-12 rounded border border-slate-200 bg-slate-50" />
                       )}
                     </td>
+                    <td className="border-t border-slate-200 p-3">
+                      <div className="flex items-center gap-2">
+                        <div>
+                          <p className="text-sm font-medium">{row.product}</p>
+                          {row.companyName ? <p className="text-xs text-slate-500">{row.companyName}</p> : null}
+                        </div>
+                        {row.productUrl ? (
+                          <a
+                            href={row.productUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-slate-500 hover:text-slate-700"
+                            title="Open product page"
+                          >
+                            ↗
+                          </a>
+                        ) : null}
+                      </div>
+                    </td>
                     <td className="border-t border-slate-200 text-sm">
                       <span className={`badge ${row.platform === "CJ" ? "badge-cj" : "badge-imp"}`}>{row.platform}</span>
                     </td>
                     <td className="border-t border-slate-200 text-sm">{toCurrency(row.price)}</td>
                     <td className="border-t border-slate-200 text-sm">
                       <span className="rounded-full bg-emerald-50 px-2 py-[2px] text-xs text-emerald-700">{row.discount}%</span>
-                    </td>
-                    <td className="border-t border-slate-200 pr-3 text-right text-sm">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(selectedIds[row.id])}
-                        onChange={(event) =>
-                          setSelectedIds((prev) => ({ ...prev, [row.id]: event.target.checked }))
-                        }
-                      />
                     </td>
                   </tr>
                 ))}
@@ -521,8 +598,9 @@ export default function ResultsClientPage() {
               </tbody>
             </table>
           </div>
-          <div className="mt-3 flex items-center justify-between text-sm">
-            <div className="flex gap-2">
+          )}
+          {!loading ? <div className="mt-3 grid grid-cols-2 items-center text-sm">
+            <div className="justify-self-start">
               <button
                 type="button"
                 onClick={() => setPage((prev) => Math.max(1, prev - 1))}
@@ -531,6 +609,8 @@ export default function ResultsClientPage() {
               >
                 Previous
               </button>
+            </div>
+            <div className="justify-self-end">
               <button
                 type="button"
                 onClick={() => setPage((prev) => prev + 1)}
@@ -540,32 +620,38 @@ export default function ResultsClientPage() {
                 Next Page
               </button>
             </div>
-            {!hasNextUiPage && hasMoreFromApis ? (
+          </div> : null}
+          {!loading && !hasNextUiPage && hasMoreFromApis ? (
+            <div className="mt-4 text-center">
               <button
                 type="button"
                 onClick={loadMore}
                 disabled={loadingMore}
-                className="text-xs text-[#185FA5] underline disabled:opacity-50"
+                className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
               >
-                {loadingMore ? "Loading more..." : "Load more"}
+                {loadingMore ? "Loading more..." : "Load more results"}
               </button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
 
-          <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-200 bg-white p-3">
-            <p className="text-sm text-slate-500"><span className="font-medium text-slate-900">{selectedCount}</span> products selected</p>
-            <div className="flex gap-2">
-              <Link href="/search" className="btn-secondary">Refine search</Link>
-              <button type="button" onClick={handleBuildPostPackage} className="btn-primary">Build post package</button>
+          <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur">
+            <div className="flex w-full items-center justify-end px-4 py-3 md:px-6">
+              <div className="flex gap-2">
+              <button type="button" onClick={handleBuildPostPackage} className="btn-primary">Review selection → Step 3</button>
+              </div>
             </div>
           </div>
           {preview ? (
-            <div className="fixed right-6 top-20 z-40 w-[420px] rounded-xl border border-slate-300 bg-white p-3 shadow-2xl">
-              <div className="mb-2 flex items-center justify-between">
-                <p className="truncate text-sm font-medium">{preview.title}</p>
-                <button type="button" onClick={() => setPreview(null)} className="text-slate-500">✕</button>
+            <div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/50 p-4">
+              <div className="w-full max-w-[560px] rounded-xl border border-slate-200 bg-white p-3 shadow-2xl">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="truncate text-sm font-medium">{preview.title}</p>
+                  <button type="button" onClick={() => setPreview(null)} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-500">Close</button>
+                </div>
+                <div className="grid h-[420px] place-items-center overflow-hidden rounded-lg bg-slate-50 p-3">
+                  <img src={preview.url} alt={preview.title} className="h-full w-full rounded object-contain" />
+                </div>
               </div>
-              <img src={preview.url} alt={preview.title} className="h-[320px] w-full rounded-lg object-contain bg-slate-50" />
             </div>
           ) : null}
         </main>

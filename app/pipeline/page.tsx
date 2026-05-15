@@ -1,16 +1,22 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import TopNav from "@/components/flow/top-nav";
+import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 
 type SelectedProduct = {
   id: string;
   product: string;
+  campaignId?: string;
   imageUrl: string;
   productUrl: string;
   platform: "CJ" | "Impact";
   price: number;
   discount: number;
+};
+
+type StoredPipelineProduct = SelectedProduct & {
+  companyName?: string;
 };
 
 type RenderformTemplate = {
@@ -21,6 +27,7 @@ type RenderformTemplate = {
 
 type OptionKey = "wordpress" | "metricool" | "gpt" | "imageEdit";
 type StepState = "waiting" | "running" | "done" | "failed";
+type ProductRunState = "waiting" | "running" | "done" | "failed";
 
 type PostPackage = {
   Image_editing_text: string;
@@ -92,19 +99,33 @@ type MetricoolPayload = {
   };
 };
 
+type WordPressProductPayload = Omit<PostPackage, "Image_editing_text">;
+
+const PIPELINE_STEPS = [
+  "Create post package",
+  "Download and edit image",
+  "Create WordPress post",
+  "Schedule to Metricool"
+];
+
 export default function PipelinePage() {
   const [selectedProducts, setSelectedProducts] = useState<SelectedProduct[]>([]);
   const [productReady, setProductReady] = useState<Record<string, boolean>>({});
+  const [productStates, setProductStates] = useState<Record<string, ProductRunState>>({});
+  const [productStepStates, setProductStepStates] = useState<Record<string, StepState[]>>({});
+  const [accordionOpen, setAccordionOpen] = useState<Record<string, boolean>>({});
   const [templates, setTemplates] = useState<RenderformTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [selectedTemplateNameFromSession, setSelectedTemplateNameFromSession] = useState<string | null>(null);
   const [pipelineStarted, setPipelineStarted] = useState(false);
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [currentProductLabel, setCurrentProductLabel] = useState<string>("No active product");
-  const [stepStates, setStepStates] = useState<StepState[]>(["waiting", "waiting", "waiting", "waiting"]);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
-  const [createdWpProducts, setCreatedWpProducts] = useState<Array<{ product: string; productId: string | number; mediaId: number }>>([]);
+  const [createdWpProducts, setCreatedWpProducts] = useState<Array<{ productId: string | number; mediaId: number; productName: string }>>([]);
+  const [logLines, setLogLines] = useState<Array<{ tone: "info" | "ok" | "warn" | "err"; text: string }>>([]);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [options, setOptions] = useState<Record<OptionKey, boolean>>({
     wordpress: true,
     metricool: true,
@@ -119,10 +140,20 @@ export default function PipelinePage() {
       const parsed = JSON.parse(raw) as SelectedProduct[];
       setSelectedProducts(parsed);
       const readyMap: Record<string, boolean> = {};
-      parsed.forEach((product) => {
-        readyMap[product.id] = false;
+      const stateMap: Record<string, ProductRunState> = {};
+      const stepMap: Record<string, StepState[]> = {};
+      const openMap: Record<string, boolean> = {};
+      parsed.forEach((product, index) => {
+        readyMap[product.id] = true;
+        stateMap[product.id] = "waiting";
+        stepMap[product.id] = ["waiting", "waiting", "waiting", "waiting"];
+        openMap[product.id] = index === 0;
       });
       setProductReady(readyMap);
+      setProductStates(stateMap);
+      setProductStepStates(stepMap);
+      setAccordionOpen(openMap);
+      setSelectedTemplateNameFromSession(sessionStorage.getItem("pipeline:selected-template-name"));
     } catch {
       setSelectedProducts([]);
     }
@@ -136,7 +167,10 @@ export default function PipelinePage() {
         const response = await http.get("/api/v1/renderform/templates");
         const data = unwrapEnvelope<RenderformTemplate[]>(response.data);
         setTemplates(data);
-        if (data.length > 0) {
+        const sessionSelected = sessionStorage.getItem("pipeline:selected-template");
+        if (sessionSelected && data.some((template) => template.identifier === sessionSelected)) {
+          setSelectedTemplateId(sessionSelected);
+        } else if (data.length > 0) {
           setSelectedTemplateId(data[0].identifier);
         }
       } catch (error) {
@@ -149,31 +183,54 @@ export default function PipelinePage() {
     void fetchTemplates();
   }, []);
 
+  useEffect(() => {
+    if (!pipelineRunning) return;
+    const timer = window.setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [pipelineRunning]);
+
+  const pushLog = (tone: "info" | "ok" | "warn" | "err", text: string) => {
+    setLogLines((prev) => [...prev, { tone, text }]);
+  };
+
   const readyCount = useMemo(
     () => Object.values(productReady).filter(Boolean).length,
     [productReady]
   );
+
   const selectedTemplateName = useMemo(
-    () => templates.find((template) => template.identifier === selectedTemplateId)?.name ?? null,
-    [selectedTemplateId, templates]
+    () => templates.find((template) => template.identifier === selectedTemplateId)?.name ?? selectedTemplateNameFromSession,
+    [selectedTemplateId, selectedTemplateNameFromSession, templates]
   );
+
+  const totalStepCount = useMemo(() => selectedProducts.length * PIPELINE_STEPS.length, [selectedProducts.length]);
+  const doneStepCount = useMemo(() => Object.values(productStepStates).flat().filter((state) => state === "done").length, [productStepStates]);
+  const errorCount = useMemo(() => Object.values(productStates).filter((state) => state === "failed").length, [productStates]);
+  const completedCount = useMemo(() => Object.values(productStates).filter((state) => state === "done").length, [productStates]);
+  const overallPercent = totalStepCount === 0 ? 0 : Math.round((doneStepCount / totalStepCount) * 100);
 
   const toggleOption = (key: OptionKey) => {
     setOptions((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const pipelineSteps = [
-    "Create post package",
-    "Download and edit image",
-    "Create WordPress post",
-    "Schedule to Metricool"
-  ];
-
-  const setStep = (index: number, state: StepState) => {
-    setStepStates((prev) => prev.map((value, idx) => (idx === index ? state : value)));
+  const setProductStep = (productId: string, stepIndex: number, state: StepState) => {
+    setProductStepStates((prev) => {
+      const existing = prev[productId] ?? ["waiting", "waiting", "waiting", "waiting"];
+      const next = [...existing];
+      next[stepIndex] = state;
+      return { ...prev, [productId]: next };
+    });
   };
 
-  const resetSteps = () => setStepStates(["waiting", "waiting", "waiting", "waiting"]);
+  const setProductState = (productId: string, state: ProductRunState) => {
+    setProductStates((prev) => ({ ...prev, [productId]: state }));
+  };
+
+  const resetProductSteps = (productId: string) => {
+    setProductStepStates((prev) => ({ ...prev, [productId]: ["waiting", "waiting", "waiting", "waiting"] }));
+  };
 
   const toPriceString = (value: number) => value.toFixed(2);
 
@@ -200,12 +257,113 @@ export default function PipelinePage() {
     };
   };
 
-  const buildMetricoolPayload = (mediaUrl: string, permalinkTemplate: string): MetricoolPayload => {
+  const getStoredPackagesByProductId = (products: StoredPipelineProduct[]) => {
+    const map: Record<string, PostPackage> = {};
+    try {
+      const raw = sessionStorage.getItem("pipeline:post-packages");
+      if (!raw) return map;
+      const parsed = JSON.parse(raw) as PostPackage[];
+      products.forEach((product, index) => {
+        const fromStorage = parsed[index];
+        if (fromStorage) {
+          map[product.id] = fromStorage;
+        }
+      });
+    } catch {
+      // ignore and use fallbacks
+    }
+    return map;
+  };
+
+  const buildWordPressProductPayload = (postPackage: PostPackage, mediaId: number): WordPressProductPayload => ({
+    name: postPackage.name,
+    type: postPackage.type,
+    status: postPackage.status,
+    featured: postPackage.featured,
+    catalog_visibility: postPackage.catalog_visibility,
+    description: postPackage.description,
+    short_description: postPackage.short_description,
+    external_url: postPackage.external_url,
+    button_text: postPackage.button_text,
+    regular_price: postPackage.regular_price,
+    sale_price: postPackage.sale_price,
+    images: [{ id: mediaId }],
+    meta_data: postPackage.meta_data
+  });
+
+  const generateMetricoolText = async (
+    product: SelectedProduct,
+    postPackage: PostPackage,
+    permalink: string
+  ): Promise<string> => {
+    if (!options.gpt) {
+      return `${postPackage.description}\n\nBuy now: ${permalink}`.trim();
+    }
+
+    const prompt = `
+You write social media caption text for affiliate product posts.
+Return ONLY strict JSON: {"text":"string"}
+
+Rules:
+- 2 to 4 lines max.
+- Concise, engaging, no hashtags spam.
+- Mention key product benefit naturally.
+- Final line MUST be exactly: Buy now: ${permalink}
+
+Context:
+{
+  "product": ${JSON.stringify(product.product)},
+  "platform": ${JSON.stringify(product.platform)},
+  "description": ${JSON.stringify(postPackage.description)},
+  "short_description": ${JSON.stringify(postPackage.short_description)},
+  "button_text": ${JSON.stringify(postPackage.button_text)},
+  "price": ${JSON.stringify(postPackage.sale_price || postPackage.regular_price)}
+}
+`.trim();
+
+    const response = await http.post("/api/v1/claude/generate", {
+      prompt,
+      modelCandidates: ["claude-sonnet-4-5"],
+      maxTokens: 300,
+      temperature: 0.7
+    });
+
+    const data = unwrapEnvelope<unknown>(response.data);
+    const rawText =
+      typeof data === "string"
+        ? data
+        : JSON.stringify(
+            (data as Record<string, unknown>)?.text ??
+            (data as Record<string, unknown>)?.output ??
+            (data as Record<string, unknown>)?.content ??
+            (data as Record<string, unknown>)?.response ??
+            data
+          );
+    const first = rawText.indexOf("{");
+    const last = rawText.lastIndexOf("}");
+    if (first < 0 || last < 0 || last <= first) {
+      return `${postPackage.description}\n\nBuy now: ${permalink}`.trim();
+    }
+
+    try {
+      const parsed = JSON.parse(rawText.slice(first, last + 1)) as { text?: string };
+      const text = parsed.text?.trim();
+      if (!text) return `${postPackage.description}\n\nBuy now: ${permalink}`.trim();
+      if (!text.includes(`Buy now: ${permalink}`)) {
+        return `${text}\nBuy now: ${permalink}`.trim();
+      }
+      return text;
+    } catch {
+      return `${postPackage.description}\n\nBuy now: ${permalink}`.trim();
+    }
+  };
+
+  const buildMetricoolPayload = (mediaUrl: string, text: string): MetricoolPayload => {
     const now = new Date();
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     const dateTime = tomorrow.toISOString().slice(0, 19);
     return {
-      text: `Automation Test\n${permalinkTemplate}`,
+      text,
       autoPublish: true,
       draft: true,
       publicationDate: {
@@ -272,6 +430,7 @@ export default function PipelinePage() {
       return;
     }
     const readyProducts = selectedProducts.filter((product) => productReady[product.id]);
+    const storedPackagesById = getStoredPackagesByProductId(selectedProducts as StoredPipelineProduct[]);
     if (readyProducts.length === 0) {
       setPipelineError("Mark at least one product as Ready");
       return;
@@ -280,16 +439,28 @@ export default function PipelinePage() {
     setPipelineError(null);
     setPipelineStarted(true);
     setPipelineRunning(true);
+    setElapsedSeconds(0);
     setCreatedWpProducts([]);
+    setLogLines([]);
+    pushLog("info", `Pipeline started for ${readyProducts.length} products`);
 
     for (const product of readyProducts) {
-      resetSteps();
+      resetProductSteps(product.id);
+      setProductState(product.id, "running");
+      setAccordionOpen((prev) => ({ ...prev, [product.id]: true }));
       setCurrentProductLabel(product.product);
-      const basePostPackage = createBasePostPackage(product);
-      setStep(0, "done");
+      pushLog("info", `[${product.product}] starting`);
+      const basePostPackage = storedPackagesById[product.id] ?? createBasePostPackage(product);
+      if (product.productUrl) {
+        basePostPackage.external_url = product.productUrl;
+      }
 
       try {
-        setStep(1, "running");
+        setProductStep(product.id, 0, "running");
+        await Promise.resolve();
+        setProductStep(product.id, 0, "done");
+
+        setProductStep(product.id, 1, "running");
         const renderResponse = await http.post("/api/v1/renderform/render", {
           template: selectedTemplateId,
           titleText: basePostPackage.Image_editing_text,
@@ -297,9 +468,10 @@ export default function PipelinePage() {
           extraData: {}
         });
         const renderData = unwrapEnvelope<{ href: string }>(renderResponse.data);
-        setStep(1, "done");
+        setProductStep(product.id, 1, "done");
+        pushLog("ok", `[${product.product}] image rendered`);
 
-        setStep(2, "running");
+        setProductStep(product.id, 2, "running");
         const mediaForm = new FormData();
         mediaForm.append("file", new Blob([]), "");
         mediaForm.append("image_url", renderData.href);
@@ -309,49 +481,40 @@ export default function PipelinePage() {
           }
         });
         const mediaUploadData = unwrapEnvelope<{ id: number; guid?: { rendered?: string }; permalink_template?: string }>(mediaUploadResponse.data);
-        setStep(2, "done");
 
-        setStep(3, "running");
-
-        const postPackagePayload = {
-          name: basePostPackage.name,
-          type: basePostPackage.type,
-          status: basePostPackage.status,
-          featured: basePostPackage.featured,
-          catalog_visibility: basePostPackage.catalog_visibility,
-          description: basePostPackage.description,
-          short_description: basePostPackage.short_description,
-          external_url: basePostPackage.external_url,
-          button_text: basePostPackage.button_text,
-          regular_price: basePostPackage.regular_price,
-          sale_price: basePostPackage.sale_price,
-          images: [{ id: mediaUploadData.id }],
-          meta_data: basePostPackage.meta_data
-        };
+        const postPackagePayload = buildWordPressProductPayload(basePostPackage, mediaUploadData.id);
 
         const productCreateResponse = await http.post("/api/v1/wordpress/products", postPackagePayload);
-        const wpProductData = unwrapEnvelope<{ id?: string | number }>(productCreateResponse.data);
+        const wpProductData = unwrapEnvelope<{ id?: string | number; permalink?: string }>(productCreateResponse.data);
+        setProductStep(product.id, 2, "done");
+        pushLog("ok", `[${product.product}] wordpress product created`);
 
+        setProductStep(product.id, 3, "running");
         if (options.metricool) {
           const mediaUrl = mediaUploadData.guid?.rendered ?? "";
-          const permalinkTemplate = mediaUploadData.permalink_template ?? "";
-          const metricoolPayload = buildMetricoolPayload(mediaUrl, permalinkTemplate);
+          const wpPermalink = wpProductData.permalink ?? "";
+          const metricoolText = await generateMetricoolText(product, basePostPackage, wpPermalink);
+          const metricoolPayload = buildMetricoolPayload(mediaUrl, metricoolText);
           await http.post(
             "/api/v1/metricool/scheduler/posts",
             metricoolPayload,
             { params: { userId: "1981059", blogId: "3410405" } }
           );
         }
-
-        setStep(3, "done");
-        setCreatedWpProducts((prev) => [...prev, { product: product.product, productId: wpProductData.id ?? "N/A", mediaId: mediaUploadData.id }]);
+        setProductStep(product.id, 3, "done");
+        setProductState(product.id, "done");
+        setCreatedWpProducts((prev) => [...prev, { productId: wpProductData.id ?? "N/A", mediaId: mediaUploadData.id, productName: product.product }]);
+        pushLog("ok", `[${product.product}] completed`);
       } catch (error) {
-        const state1 = stepStates[1];
-        const state2 = stepStates[2];
-        if (state1 === "running") setStep(1, "failed");
-        if (state2 === "running") setStep(2, "failed");
-        if (stepStates[3] === "running") setStep(3, "failed");
-        setPipelineError(error instanceof Error ? error.message : "Pipeline failed");
+        setProductState(product.id, "failed");
+        setProductStepStates((prev) => {
+          const current = prev[product.id] ?? ["waiting", "waiting", "waiting", "waiting"];
+          const next = current.map((step) => (step === "running" ? "failed" : step)) as StepState[];
+          return { ...prev, [product.id]: next };
+        });
+        const message = error instanceof Error ? error.message : "Pipeline failed";
+        setPipelineError(message);
+        pushLog("err", `[${product.product}] failed: ${message}`);
         setPipelineRunning(false);
         return;
       }
@@ -359,125 +522,190 @@ export default function PipelinePage() {
 
     setPipelineRunning(false);
     setCurrentProductLabel("Completed");
+    pushLog("ok", "Pipeline completed successfully");
   };
 
-  const completedSteps = stepStates.filter((state) => state === "done").length;
-  const allStepsCompleted = completedSteps === pipelineSteps.length && pipelineSteps.length > 0;
+  const statusBannerClass = !pipelineStarted
+    ? "status-banner idle"
+    : pipelineRunning
+      ? "status-banner running"
+      : pipelineError
+        ? "status-banner"
+        : "status-banner done";
+
+  const statusIcon = !pipelineStarted ? "⏸" : pipelineRunning ? "▶" : pipelineError ? "⚠" : "✓";
+  const statusTitle = !pipelineStarted ? "Ready to start" : pipelineRunning ? "Pipeline running" : pipelineError ? "Pipeline failed" : "Pipeline completed";
+  const statusSub = !pipelineStarted
+    ? `${readyCount} products queued · Review options and click Start pipeline`
+    : pipelineRunning
+      ? `Running for ${currentProductLabel}`
+      : pipelineError
+        ? pipelineError
+        : `Completed ${completedCount}/${selectedProducts.length} products`;
 
   return (
     <>
-      <TopNav right={<div className="text-sm text-slate-500">Results / <span className="font-medium text-slate-800">Pipeline</span></div>} />
-      <div className="page-wrap">
-        <h2 className="mb-1 text-[18px] font-medium">Run pipeline</h2>
-        <p className="mb-4 text-sm text-slate-500">{selectedProducts.length} products selected · configure options and start</p>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="space-y-4">
-            <div className="card p-4">
-              <p className="mb-3 text-sm font-medium">Selected products</p>
-              {selectedProducts.length === 0 ? (
-                <p className="text-sm text-slate-500">No products selected from results page.</p>
-              ) : (
-                selectedProducts.map((product) => (
-                  <div key={product.id} className="mb-2 flex items-center justify-between rounded-md border border-slate-200 p-2 last:mb-0">
-                    <div>
-                      <p className="text-sm font-medium">{product.product}</p>
-                      <p className="text-xs text-slate-500">${product.price.toFixed(2)} · {product.platform === "CJ" ? "CJ Affiliate" : "Impact"}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setProductReady((prev) => ({ ...prev, [product.id]: !prev[product.id] }))}
-                      className={`rounded-full px-2 py-[2px] text-xs ${productReady[product.id] ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}
-                    >
-                      {productReady[product.id] ? "Ready" : "Not started"}
-                    </button>
-                  </div>
-                ))
-              )}
+      <TopNav />
+      <FlowStepper active={6} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", minHeight: "calc(100vh - var(--nav-h) - var(--stepper-h))", gap: 0 }}>
+        <div style={{ padding: 24, borderRight: "1px solid var(--border)", overflowY: "auto" }}>
+          <div className={statusBannerClass}>
+            <div className="status-icon">{statusIcon}</div>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{statusTitle}</div>
+              <div style={{ fontSize: 13, color: "var(--text-3)", marginTop: 2 }}>{statusSub}</div>
             </div>
-
-            <div className="card p-4">
-              <p className="mb-3 text-sm font-medium">Select image template</p>
-              {loadingTemplates ? <p className="text-sm text-slate-500">Loading templates...</p> : null}
-              {templatesError ? <p className="text-sm text-red-600">{templatesError}</p> : null}
-              <div className="grid gap-3 md:grid-cols-2">
-                {templates.map((template) => (
-                  <button
-                    key={template.identifier}
-                    type="button"
-                    onClick={() => setSelectedTemplateId(template.identifier)}
-                    className={`w-full overflow-hidden rounded-lg border p-2 text-left ${selectedTemplateId === template.identifier ? "border-[#185FA5] bg-[#E6F1FB]" : "border-slate-200 bg-white"}`}
-                  >
-                    <div className="mb-2 grid aspect-square w-full place-items-center overflow-hidden rounded bg-slate-50 p-2">
-                      <img src={template.preview} alt={template.name} className="h-full w-full rounded object-contain" />
-                    </div>
-                    <p className="text-sm font-medium">{template.name}</p>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="card p-4">
-              <p className="mb-3 text-sm font-medium">Options</p>
-              <div className="space-y-2 text-sm text-slate-700">
-                <div className="flex items-center justify-between rounded-md border border-slate-200 p-2"><span>Create WordPress post</span><button type="button" onClick={() => toggleOption("wordpress")} className={`rounded-full px-2 py-[2px] text-xs ${options.wordpress ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{options.wordpress ? "On" : "Off"}</button></div>
-                <div className="flex items-center justify-between rounded-md border border-slate-200 p-2"><span>Schedule to Metricool</span><button type="button" onClick={() => toggleOption("metricool")} className={`rounded-full px-2 py-[2px] text-xs ${options.metricool ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{options.metricool ? "On" : "Off"}</button></div>
-                <div className="flex items-center justify-between rounded-md border border-slate-200 p-2"><span>GPT-generated content</span><button type="button" onClick={() => toggleOption("gpt")} className={`rounded-full px-2 py-[2px] text-xs ${options.gpt ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{options.gpt ? "On" : "Off"}</button></div>
-                <div className="flex items-center justify-between rounded-md border border-slate-200 p-2"><span>Edit image (resize + watermark)</span><button type="button" onClick={() => toggleOption("imageEdit")} className={`rounded-full px-2 py-[2px] text-xs ${options.imageEdit ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{options.imageEdit ? "On" : "Off"}</button></div>
-              </div>
-              <button type="button" onClick={runPipeline} disabled={pipelineRunning} className="btn-primary mt-3 inline-block disabled:opacity-50">
-                {pipelineRunning ? "Running..." : "Start pipeline"}
+            <div style={{ marginLeft: "auto" }}>
+              <button className="btn btn-primary btn-lg" onClick={runPipeline} disabled={pipelineRunning}>
+                {pipelineRunning ? "Running..." : "▶ Start pipeline"}
               </button>
             </div>
           </div>
 
-          <div className="space-y-4">
-            <div className="card p-4">
-              <p className="mb-2 text-sm font-medium">Pipeline status</p>
-              <p className="mb-2 text-xs text-slate-500">Current product: {currentProductLabel}</p>
-              <div className="mb-1 flex justify-between text-xs text-slate-500"><span>Progress</span><span>{pipelineStarted ? `${completedSteps} / ${pipelineSteps.length} steps` : `0 / ${pipelineSteps.length} steps`}</span></div>
-              <div className="mb-3 h-2 overflow-hidden rounded bg-slate-200"><div className="h-full bg-[#185FA5]" style={{ width: pipelineStarted ? `${Math.round((completedSteps / pipelineSteps.length) * 100)}%` : "0%" }} /></div>
-              {pipelineError ? <p className="mb-2 text-xs text-red-600">{pipelineError}</p> : null}
-              {allStepsCompleted ? <p className="mb-2 text-sm font-medium text-emerald-700">Completed!!</p> : null}
-              <div className="space-y-2 text-sm">
-                {pipelineSteps.map((step, index) => (
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-3)", marginBottom: 6 }}>
+              <span>Overall progress</span>
+              <span>{doneStepCount} / {totalStepCount} steps</span>
+            </div>
+            <div className="prog-track"><div className="prog-fill" style={{ width: `${overallPercent}%` }} /></div>
+          </div>
+
+          {selectedProducts.map((product) => {
+            const isOpen = accordionOpen[product.id] !== false;
+            const steps = productStepStates[product.id] ?? ["waiting", "waiting", "waiting", "waiting"];
+            const state = productStates[product.id] ?? "waiting";
+            return (
+              <div key={product.id} className="prod-pipeline">
+                <div className="prod-pipeline-head open" onClick={() => setAccordionOpen((prev) => ({ ...prev, [product.id]: !isOpen }))}>
                   <div
-                    key={step}
-                    className={`rounded border p-2 ${
-                      stepStates[index] === "done"
-                        ? "border-emerald-200 bg-emerald-50"
-                        : stepStates[index] === "running"
-                          ? "border-[#185FA5] bg-[#E6F1FB]"
-                          : stepStates[index] === "failed"
-                            ? "border-rose-200 bg-rose-50"
-                            : "border-slate-200 bg-white"
-                    }`}
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: 8,
+                      overflow: "hidden",
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-primary)",
+                      display: "grid",
+                      placeItems: "center",
+                      flexShrink: 0
+                    }}
                   >
-                    {index + 1}. {step} - {stepStates[index]}
+                    {product.imageUrl ? (
+                      <img
+                        src={product.imageUrl}
+                        alt={product.product}
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        onError={(event) => {
+                          event.currentTarget.style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <span style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600 }}>
+                        {product.platform === "CJ" ? "CJ" : "IM"}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{product.product}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-3)" }}>{product.platform} · ${product.price.toFixed(2)}</div>
+                  </div>
+                  <span className={`prod-status-pill ${state}`}>{state.charAt(0).toUpperCase() + state.slice(1)}</span>
+                  <span style={{ color: "var(--text-3)", fontSize: 12 }}>{isOpen ? "▼" : "▶"}</span>
+                </div>
+                {isOpen ? (
+                  <div className="prod-pipeline-body">
+                    {PIPELINE_STEPS.map((step, index) => (
+                      <div key={step} className="mini-step">
+                        <div className={`mini-dot ${steps[index] === "done" ? "done" : steps[index] === "running" ? "running" : steps[index] === "failed" ? "error" : ""}`}>{index + 1}</div>
+                        <span className={`mini-step-name ${steps[index] === "waiting" ? "muted" : ""}`}>{step}</span>
+                        <span className="mini-step-time">{steps[index]}</span>
+                      </div>
+                    ))}
+                    {state === "done" ? (
+                      <div className="result-card">
+                        <div style={{ fontWeight: 600, color: "var(--green)" }}>✓ Published successfully</div>
+                        <div>
+                          WordPress post:{" "}
+                          {createdWpProducts.find((item) => item.productName === product.product)?.productId ?? "N/A"}
+                        </div>
+                        <div>Template: {selectedTemplateName ?? selectedTemplateId ?? "N/A"}</div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+
+          {logLines.length > 0 ? (
+            <div style={{ marginTop: 20 }}>
+              <div className="section-title" style={{ marginBottom: 8 }}>Live log</div>
+              <div className="log-stream">
+                {logLines.map((line, index) => (
+                  <div key={`${line.text}-${index}`} className={line.tone === "ok" ? "log-ok" : line.tone === "err" ? "log-err" : line.tone === "warn" ? "log-warn" : "log-info"}>
+                    {line.text}
                   </div>
                 ))}
               </div>
             </div>
+          ) : null}
+        </div>
 
-            <div className="card p-4">
-              <p className="mb-2 text-sm font-medium">Run summary</p>
-              <div className="flex justify-between border-b border-slate-200 py-2 text-sm"><span className="text-slate-500">Selected products</span><span>{selectedProducts.length}</span></div>
-              <div className="flex justify-between border-b border-slate-200 py-2 text-sm"><span className="text-slate-500">Ready products</span><span>{readyCount}</span></div>
-              <div className="flex justify-between border-b border-slate-200 py-2 text-sm"><span className="text-slate-500">Template</span><span>{selectedTemplateName ?? "Not selected"}</span></div>
-              <div className="py-2 text-sm">
-                <p className="mb-1 text-slate-500">Created WordPress products</p>
-                {createdWpProducts.length === 0 ? (
-                  <p className="text-xs text-slate-500">No products created yet.</p>
-                ) : (
-                  createdWpProducts.map((item) => (
-                    <p key={`${item.product}-${item.productId}`} className="text-xs">
-                      {item.product} · Product ID: {item.productId} · Media ID: {item.mediaId}
-                    </p>
-                  ))
-                )}
-              </div>
+        <div style={{ padding: 20, background: "var(--bg)", overflowY: "auto" }}>
+          <div className="section-title" style={{ marginBottom: 14 }}>Run summary</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+            <div className="card card-pad" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text)" }}>{selectedProducts.length}</div>
+              <div style={{ fontSize: 11, color: "var(--text-3)" }}>Products</div>
+            </div>
+            <div className="card card-pad" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 700, color: "var(--green)" }}>{completedCount}</div>
+              <div style={{ fontSize: 11, color: "var(--text-3)" }}>Completed</div>
+            </div>
+            <div className="card card-pad" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 700, color: "var(--red)" }}>{errorCount}</div>
+              <div style={{ fontSize: 11, color: "var(--text-3)" }}>Errors</div>
+            </div>
+            <div className="card card-pad" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text-2)" }}>{elapsedSeconds}s</div>
+              <div style={{ fontSize: 11, color: "var(--text-3)" }}>Elapsed</div>
             </div>
           </div>
+
+          <div className="card card-pad" style={{ marginBottom: 14 }}>
+            <div className="section-title" style={{ marginBottom: 10 }}>Configuration</div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+              <span style={{ color: "var(--text-3)" }}>Template</span><strong>{selectedTemplateName ?? selectedTemplateId ?? "Not selected"}</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+              <span style={{ color: "var(--text-3)" }}>WordPress</span><span style={{ color: "var(--green)", fontWeight: 500 }}>{options.wordpress ? "On" : "Off"}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+              <span style={{ color: "var(--text-3)" }}>Metricool</span><span style={{ color: "var(--green)", fontWeight: 500 }}>{options.metricool ? "On" : "Off"}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+              <span style={{ color: "var(--text-3)" }}>GPT content</span><span style={{ color: "var(--green)", fontWeight: 500 }}>{options.gpt ? "On" : "Off"}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0" }}>
+              <span style={{ color: "var(--text-3)" }}>Image edit</span><span style={{ color: "var(--green)", fontWeight: 500 }}>{options.imageEdit ? "On" : "Off"}</span>
+            </div>
+          </div>
+
+          <div className="card card-pad" style={{ marginBottom: 16 }}>
+            <div className="section-title" style={{ marginBottom: 10 }}>Edit previous step</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <a className="btn btn-sm" href="/review" style={{ justifyContent: "space-between" }}>Products <span>→</span></a>
+              <a className="btn btn-sm" href="/template" style={{ justifyContent: "space-between" }}>Template <span>→</span></a>
+              <a className="btn btn-sm" href="/package" style={{ justifyContent: "space-between" }}>Post package <span>→</span></a>
+            </div>
+          </div>
+
+          <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={runPipeline} disabled={pipelineRunning}>
+            {pipelineRunning ? "Running..." : "▶ Start pipeline"}
+          </button>
+
+          {loadingTemplates ? <p className="mt-2 text-xs text-slate-500">Loading templates...</p> : null}
+          {templatesError ? <p className="mt-2 text-xs text-red-600">{templatesError}</p> : null}
         </div>
       </div>
     </>

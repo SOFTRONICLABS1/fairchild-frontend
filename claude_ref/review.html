@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Review Selection — Affiliate Autoposter</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="shell-nav">
+  <div class="logo"><div class="logo-dot">A</div>Affiliate Autoposter</div>
+  <div class="nav-right">
+    <a class="btn btn-sm" href="./results.html">← Back to results</a>
+    <a class="btn btn-sm" href="./settings.html">Settings</a>
+  </div>
+</nav>
+
+<!-- STEPPER -->
+<div class="stepper-bar">
+  <div class="stepper">
+    <a class="step-item done" href="./search.html"><div class="step-circle">✓</div><span class="step-label">Search</span></a>
+    <a class="step-item done" href="./results.html"><div class="step-circle">✓</div><span class="step-label">Results</span></a>
+    <a class="step-item active" href="./review.html"><div class="step-circle">3</div><span class="step-label">Review</span></a>
+    <a class="step-item" href="./template.html"><div class="step-circle">4</div><span class="step-label">Template</span></a>
+    <a class="step-item" href="./package.html"><div class="step-circle">5</div><span class="step-label">Post package</span></a>
+    <a class="step-item" href="./pipeline.html"><div class="step-circle">6</div><span class="step-label">Pipeline</span></a>
+  </div>
+</div>
+
+<!-- PAGE -->
+<div style="display:grid;grid-template-columns:1fr 300px;min-height:calc(100vh - 56px - 64px - 64px);gap:0;">
+
+  <!-- LEFT: selected products -->
+  <div style="padding:24px;border-right:1px solid var(--border);padding-bottom:80px;">
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <h2 style="font-size:17px;font-weight:600;">Review your selection</h2>
+      <a class="btn btn-sm" href="./results.html">+ Add more products</a>
+    </div>
+    <p style="font-size:13px;color:var(--text-3);margin-bottom:20px;">
+      2 products selected. Review details, remove any you don't want, then continue.
+    </p>
+
+    <!-- Product 1 -->
+    <div class="review-card" style="margin-bottom:12px;" id="rc1">
+      <div class="review-img">🎧</div>
+      <div class="review-info">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+          <div>
+            <div class="review-name">Sony WH-1000XM5</div>
+            <div class="review-meta">
+              <span class="badge badge-cj" style="margin-right:6px;">CJ</span>
+              Sony Electronics · $279.99 · <span style="color:var(--green);font-weight:500;">30% off</span>
+            </div>
+          </div>
+          <button class="btn btn-danger btn-sm" onclick="removeProduct('rc1')" style="flex-shrink:0;">Remove</button>
+        </div>
+        <div style="font-size:12px;color:var(--text-3);margin-bottom:8px;">
+          Industry-leading noise cancellation. Up to 30 hours of battery life. Touch sensor controls.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:11px;color:var(--text-3);">Click URL:</span>
+          <code style="font-size:11px;background:var(--bg);padding:2px 6px;border-radius:4px;color:var(--text-2);">cj.com/track/?pid=12345&aid=67890</code>
+          <span style="font-size:11px;color:var(--green);font-weight:500;">Commission: 8.5%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Product 2 -->
+    <div class="review-card" style="margin-bottom:12px;" id="rc2">
+      <div class="review-img">🖱️</div>
+      <div class="review-info">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+          <div>
+            <div class="review-name">Logitech MX Master 3S</div>
+            <div class="review-meta">
+              <span class="badge badge-imp" style="margin-right:6px;">Impact</span>
+              Logitech · $89.99 · <span style="color:var(--green);font-weight:500;">25% off</span>
+            </div>
+          </div>
+          <button class="btn btn-danger btn-sm" onclick="removeProduct('rc2')" style="flex-shrink:0;">Remove</button>
+        </div>
+        <div style="font-size:12px;color:var(--text-3);margin-bottom:8px;">
+          Advanced 8K DPI tracking. Whisper-quiet clicks. Ergonomic design for all-day comfort.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:11px;color:var(--text-3);">Click URL:</span>
+          <code style="font-size:11px;background:var(--bg);padding:2px 6px;border-radius:4px;color:var(--text-2);">impact.com/track/?c=logitech&m=MX3S</code>
+          <span style="font-size:11px;color:var(--green);font-weight:500;">Commission: 6.0%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty state (hidden by default) -->
+    <div id="empty-review" class="empty-state card card-pad" style="display:none;">
+      <div class="empty-state-icon">🗑️</div>
+      <h3>No products selected</h3>
+      <p>Go back to results and select products to post.</p>
+      <a class="btn btn-primary" href="./results.html" style="margin-top:14px;display:inline-flex;">← Back to results</a>
+    </div>
+
+  </div>
+
+  <!-- RIGHT: Summary panel -->
+  <div style="padding:24px;background:var(--bg);">
+
+    <div class="section-title" style="margin-bottom:14px;">Summary</div>
+
+    <div class="card card-pad" style="margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <span style="font-size:13px;color:var(--text-2);">Products</span>
+        <strong id="summary-count">2</strong>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <span style="font-size:13px;color:var(--text-2);">Platforms</span>
+        <div style="display:flex;gap:4px;">
+          <span class="badge badge-cj">CJ</span>
+          <span class="badge badge-imp">Impact</span>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <span style="font-size:13px;color:var(--text-2);">Avg discount</span>
+        <span style="color:var(--green);font-weight:500;">27.5%</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:13px;color:var(--text-2);">Avg commission</span>
+        <span style="color:var(--green);font-weight:500;">7.25%</span>
+      </div>
+    </div>
+
+    <div class="card card-pad" style="margin-bottom:14px;">
+      <div class="section-title" style="margin-bottom:10px;">Pipeline will run</div>
+      <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;color:var(--text-2);">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:var(--green);">✓</span> Download &amp; edit image
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:var(--green);">✓</span> GPT post package
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:var(--green);">✓</span> WordPress post
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:var(--green);">✓</span> Metricool schedule
+        </div>
+      </div>
+    </div>
+
+    <a class="btn btn-primary" href="./template.html" style="width:100%;justify-content:center;">
+      Next: Pick template → Step 4
+    </a>
+
+    <a class="btn" href="./results.html" style="width:100%;justify-content:center;margin-top:8px;">
+      ← Edit selection
+    </a>
+
+  </div>
+
+</div>
+
+<!-- STICKY ACTION BAR -->
+<div class="action-bar">
+  <div class="action-bar-left">
+    <strong id="ab-count">2</strong> products ready to post
+  </div>
+  <div class="action-bar-right">
+    <a class="btn" href="./results.html">← Edit selection</a>
+    <a class="btn btn-primary" href="./template.html">Next: Pick template →</a>
+  </div>
+</div>
+
+<script>
+  function removeProduct(id) {
+    const el = document.getElementById(id);
+    el.style.opacity = '0';
+    el.style.transition = 'opacity 0.2s';
+    setTimeout(() => {
+      el.remove();
+      const remaining = document.querySelectorAll('.review-card').length;
+      document.getElementById('summary-count').textContent = remaining;
+      document.getElementById('ab-count').textContent = remaining;
+      if (remaining === 0) document.getElementById('empty-review').style.display = 'block';
+    }, 200);
+  }
+</script>
+</body>
+</html>
