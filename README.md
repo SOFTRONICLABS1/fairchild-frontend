@@ -12,7 +12,7 @@ Flow-first frontend based on `reference/posto_page1..5`.
 ## Notes
 - This phase focuses only on the product flow and design structure.
 - API endpoint integration is intentionally deferred.
-- `reference/` is temporary design input and can be deleted later.
+- `reference/` is temporary design input and can be deleted laters.
 
 ## Run
 - `npm install`
