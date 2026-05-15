@@ -300,8 +300,9 @@ export default function PipelinePage() {
     postPackage: PostPackage,
     permalink: string
   ): Promise<string> => {
+    const fallbackTags = "#deals #shopping #affiliate #sale";
     if (!options.gpt) {
-      return `${postPackage.description}\n\nBuy now: ${permalink}`.trim();
+      return `${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`.trim();
     }
 
     const prompt = `
@@ -313,6 +314,7 @@ Rules:
 - Concise, engaging, no hashtags spam.
 - Mention key product benefit naturally.
 - Final line MUST be exactly: Buy now: ${permalink}
+- Add one more final line after Buy now with 3-5 relevant hashtags (must start with #).
 
 Context:
 {
@@ -346,19 +348,24 @@ Context:
     const first = rawText.indexOf("{");
     const last = rawText.lastIndexOf("}");
     if (first < 0 || last < 0 || last <= first) {
-      return `${postPackage.description}\n\nBuy now: ${permalink}`.trim();
+      return `${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`.trim();
     }
 
     try {
       const parsed = JSON.parse(rawText.slice(first, last + 1)) as { text?: string };
       const text = parsed.text?.trim();
-      if (!text) return `${postPackage.description}\n\nBuy now: ${permalink}`.trim();
-      if (!text.includes(`Buy now: ${permalink}`)) {
-        return `${text}\nBuy now: ${permalink}`.trim();
+      if (!text) return `${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`.trim();
+      let normalized = text;
+      if (!normalized.includes(`Buy now: ${permalink}`)) {
+        normalized = `${normalized}\nBuy now: ${permalink}`.trim();
       }
-      return text;
+      const hasTagLine = normalized.split("\n").some((line) => line.trim().startsWith("#"));
+      if (!hasTagLine) {
+        normalized = `${normalized}\n${fallbackTags}`.trim();
+      }
+      return normalized;
     } catch {
-      return `${postPackage.description}\n\nBuy now: ${permalink}`.trim();
+      return `${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`.trim();
     }
   };
 

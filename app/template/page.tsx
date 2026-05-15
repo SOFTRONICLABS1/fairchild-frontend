@@ -10,6 +10,7 @@ type RenderformTemplate = {
   identifier: string;
   name: string;
   preview: string;
+  createdAt?: string;
 };
 
 export default function TemplatePage() {
@@ -25,10 +26,14 @@ export default function TemplatePage() {
       try {
         const response = await http.get("/api/v1/renderform/templates");
         const list = unwrapEnvelope<RenderformTemplate[]>(response.data);
-        setTemplates(list);
-        const sessionSelected = sessionStorage.getItem("pipeline:selected-template");
-        const fallback = list[0]?.identifier ?? null;
-        setSelectedTemplateId(sessionSelected ?? fallback);
+        const ordered = [...list].sort((a, b) => {
+          const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return aTime - bTime;
+        });
+        setTemplates(ordered);
+        const fallback = ordered[0]?.identifier ?? null;
+        setSelectedTemplateId(fallback);
       } catch (fetchError) {
         setError(fetchError instanceof Error ? fetchError.message : "Failed to load templates");
       } finally {
@@ -71,7 +76,7 @@ export default function TemplatePage() {
                       : "border border-slate-200"
                   }`}
                 >
-                  <div className="mb-2 grid aspect-square place-items-center overflow-hidden rounded bg-slate-50 p-2">
+                  <div className="mb-2 grid aspect-[4/5] place-items-center rounded bg-slate-50 p-2">
                     <img src={template.preview} alt={template.name} className="h-full w-full object-contain" />
                   </div>
                   <p className="text-sm font-medium">{template.name}</p>
