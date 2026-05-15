@@ -10,7 +10,9 @@ const PAGE_SIZE = 50;
 const API_PAGE_LIMIT = 100;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const ENABLE_RESULTS_CACHE = true;
-const ENABLE_CJ_LINK_VALIDATION = false;
+const ENABLE_CJ_LINK_VALIDATION = true;
+const CJ_VALIDATION_BATCH_SIZE = 8;
+const CJ_URL_HEALTH_CACHE_KEY = "results:cj-url-health:v1";
 
 type ResultRow = {
   rowKey: string;
@@ -70,6 +72,13 @@ type CachedSearchState = {
   page: number;
   cursor: PlatformCursor;
   loadedAt: number;
+};
+
+type CjValidationState = "pending" | "valid" | "invalid";
+type ValidationQueueItem = {
+  rowId: string;
+  url: string;
+  epoch: number;
 };
 
 function toNumber(value: string | number | null | undefined): number {
@@ -249,8 +258,13 @@ export default function ResultsClientPage() {
   });
   const [page, setPage] = useState(1);
   const [preview, setPreview] = useState<{ url: string; title: string } | null>(null);
+  const [cjValidationState, setCjValidationState] = useState<Record<string, CjValidationState>>({});
+  const [invalidNoticeCount, setInvalidNoticeCount] = useState(0);
   const cjLastCallAtRef = useRef(0);
   const cjLinkHealthCacheRef = useRef<Map<string, boolean>>(new Map());
+  const cjValidationQueueRef = useRef<ValidationQueueItem[]>([]);
+  const cjValidationRunningRef = useRef(false);
+  const searchEpochRef = useRef(0);
 
   const cacheKey = useMemo(
     () => `results-cache:v1:${keyword}:${useCj ? "1" : "0"}:${useImpact ? "1" : "0"}`,
@@ -262,6 +276,151 @@ export default function ResultsClientPage() {
     const href = params ? `/results?${params}` : "/results";
     sessionStorage.setItem("pipeline:last-results-url", href);
   }, [searchParams]);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(CJ_URL_HEALTH_CACHE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, boolean>;
+      cjLinkHealthCacheRef.current = new Map(Object.entries(parsed));
+    } catch {
+      cjLinkHealthCacheRef.current = new Map();
+    }
+  }, []);
+
+  const persistCjHealthCache = () => {
+    try {
+      sessionStorage.setItem(
+        CJ_URL_HEALTH_CACHE_KEY,
+        JSON.stringify(Object.fromEntries(cjLinkHealthCacheRef.current.entries()))
+      );
+    } catch {
+      // ignore cache persistence failures
+    }
+  };
+
+  const removeInvalidRows = (invalidIds: string[]) => {
+    if (invalidIds.length === 0) return;
+    const invalidSet = new Set(invalidIds);
+    let removedSelected = 0;
+    setRows((prev) => prev.filter((row) => !invalidSet.has(row.id)));
+    setSelectedIds((prev) => {
+      const next = { ...prev };
+      invalidIds.forEach((id) => {
+        if (next[id]) removedSelected += 1;
+        delete next[id];
+      });
+      return next;
+    });
+    if (removedSelected > 0) {
+      setInvalidNoticeCount((prev) => prev + removedSelected);
+    }
+  };
+
+  const processCjValidationQueue = async () => {
+    if (cjValidationRunningRef.current) return;
+    cjValidationRunningRef.current = true;
+    try {
+      while (cjValidationQueueRef.current.length > 0) {
+        const currentEpoch = searchEpochRef.current;
+        const batch = cjValidationQueueRef.current
+          .splice(0, CJ_VALIDATION_BATCH_SIZE)
+          .filter((item) => item.epoch === currentEpoch);
+        if (batch.length === 0) continue;
+
+        const checks = await Promise.all(
+          batch.map(async (item) => {
+            const cached = cjLinkHealthCacheRef.current.get(item.url);
+            if (cached !== undefined) {
+              return { rowId: item.rowId, healthy: cached };
+            }
+            try {
+              const response = await fetch(`/api/url-health?url=${encodeURIComponent(item.url)}`);
+              const payload = (await response.json()) as { ok?: boolean };
+              const healthy = payload.ok === true;
+              cjLinkHealthCacheRef.current.set(item.url, healthy);
+              return { rowId: item.rowId, healthy };
+            } catch {
+              cjLinkHealthCacheRef.current.set(item.url, false);
+              return { rowId: item.rowId, healthy: false };
+            }
+          })
+        );
+
+        persistCjHealthCache();
+
+        const invalidIds = checks.filter((item) => !item.healthy).map((item) => item.rowId);
+        setCjValidationState((prev) => {
+          const next = { ...prev };
+          checks.forEach((item) => {
+            next[item.rowId] = item.healthy ? "valid" : "invalid";
+          });
+          return next;
+        });
+        removeInvalidRows(invalidIds);
+      }
+    } finally {
+      cjValidationRunningRef.current = false;
+    }
+  };
+
+  const queueCjValidation = (candidateRows: ResultRow[]) => {
+    if (!ENABLE_CJ_LINK_VALIDATION) return;
+    const currentEpoch = searchEpochRef.current;
+    const queuedIds = new Set(cjValidationQueueRef.current.map((item) => item.rowId));
+    const toQueue: ValidationQueueItem[] = [];
+    const validIds: string[] = [];
+    const pendingIds: string[] = [];
+    const invalidIds: string[] = [];
+
+    candidateRows
+      .filter((row) => row.platform === "CJ" && Boolean(row.productUrl))
+      .forEach((row) => {
+        const cached = cjLinkHealthCacheRef.current.get(row.productUrl);
+        if (cached === true) {
+          validIds.push(row.id);
+          return;
+        }
+        if (cached === false) {
+          invalidIds.push(row.id);
+          return;
+        }
+        if (queuedIds.has(row.id)) return;
+        pendingIds.push(row.id);
+        toQueue.push({ rowId: row.id, url: row.productUrl, epoch: currentEpoch });
+      });
+
+    if (validIds.length > 0 || pendingIds.length > 0) {
+      const validSet = new Set(validIds);
+      const pendingSet = new Set(pendingIds);
+      setCjValidationState((prev) => {
+        const next = { ...prev };
+        validSet.forEach((id) => {
+          next[id] = "valid";
+        });
+        pendingSet.forEach((id) => {
+          next[id] = "pending";
+        });
+        return next;
+      });
+    }
+
+    if (invalidIds.length > 0) {
+      setCjValidationState((prev) => {
+        const next = { ...prev };
+        invalidIds.forEach((id) => {
+          next[id] = "invalid";
+        });
+        return next;
+      });
+      removeInvalidRows(invalidIds);
+    }
+
+    if (toQueue.length > 0) {
+      cjValidationQueueRef.current.push(...toQueue);
+      void processCjValidationQueue();
+    }
+  };
 
   const throttleCj = async () => {
     const now = Date.now();
@@ -308,34 +467,7 @@ export default function ResultsClientPage() {
       }
     });
 
-    if (!ENABLE_CJ_LINK_VALIDATION) {
-      return { chunkRows, nextState, failures };
-    }
-
-    const cjRows = chunkRows.filter((row) => row.platform === "CJ");
-    const nonCjRows = chunkRows.filter((row) => row.platform !== "CJ");
-    const validatedCjRows: ResultRow[] = [];
-
-    for (const row of cjRows) {
-      if (!row.productUrl) continue;
-      const cached = cjLinkHealthCacheRef.current.get(row.productUrl);
-      if (cached !== undefined) {
-        if (cached) validatedCjRows.push(row);
-        continue;
-      }
-
-      try {
-        const response = await fetch(`/api/url-health?url=${encodeURIComponent(row.productUrl)}`);
-        const payload = (await response.json()) as { ok?: boolean };
-        const isHealthy = payload.ok === true;
-        cjLinkHealthCacheRef.current.set(row.productUrl, isHealthy);
-        if (isHealthy) validatedCjRows.push(row);
-      } catch {
-        cjLinkHealthCacheRef.current.set(row.productUrl, false);
-      }
-    }
-
-    return { chunkRows: [...validatedCjRows, ...nonCjRows], nextState, failures };
+    return { chunkRows, nextState, failures };
   };
 
   useEffect(() => {
@@ -346,6 +478,10 @@ export default function ResultsClientPage() {
       try {
         const shouldRestore = sessionStorage.getItem("pipeline:allow-results-restore") === "1";
         sessionStorage.removeItem("pipeline:allow-results-restore");
+        searchEpochRef.current += 1;
+        cjValidationQueueRef.current = [];
+        setCjValidationState({});
+        setInvalidNoticeCount(0);
 
         if (ENABLE_RESULTS_CACHE) {
           const rawCache = sessionStorage.getItem(cacheKey);
@@ -356,6 +492,7 @@ export default function ResultsClientPage() {
               setCursor(cached.cursor);
               setSelectedIds(cached.selectedIds ?? buildSelectionState(cached.rows));
               setPage(cached.page ?? 1);
+              queueCjValidation(cached.rows);
               return;
             }
           }
@@ -374,6 +511,7 @@ export default function ResultsClientPage() {
         setCursor(nextState);
         const initialSelection = shouldRestore ? buildSelectionState(deduped) : Object.fromEntries(deduped.map((row) => [row.id, false]));
         setSelectedIds(initialSelection);
+        queueCjValidation(deduped);
         if (failures.length) setError(failures.join(" | "));
         console.debug("[results] initial load completed", {
           keyword,
@@ -408,6 +546,7 @@ export default function ResultsClientPage() {
       const merged = dedupeByTitle([...rows, ...chunkRows]);
       setRows(merged);
       setCursor(nextState);
+      queueCjValidation(merged);
       setSelectedIds((prev) => {
         const next = { ...prev };
         merged.forEach((row) => {
@@ -431,18 +570,31 @@ export default function ResultsClientPage() {
   };
 
   const selectedCount = useMemo(
-    () => Object.values(selectedIds).filter(Boolean).length,
-    [selectedIds]
+    () => rows.filter((row) => Boolean(selectedIds[row.id])).length,
+    [rows, selectedIds]
+  );
+  const filteredRows = useMemo(
+    () =>
+      rows.filter((row) => {
+        if (!ENABLE_CJ_LINK_VALIDATION) return true;
+        if (row.platform !== "CJ") return true;
+        return cjValidationState[row.id] === "valid";
+      }),
+    [cjValidationState, rows]
   );
   const visibleRows = useMemo(
-    () => rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
-    [page, rows]
+    () => filteredRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [filteredRows, page]
   );
-  const hasNextUiPage = rows.length > page * PAGE_SIZE;
+  const hasNextUiPage = filteredRows.length > page * PAGE_SIZE;
   const hasMoreFromApis = cursor.cjHasMore || cursor.impactHasMore;
+  const pendingCjValidations = useMemo(
+    () => Object.values(cjValidationState).filter((value) => value === "pending").length,
+    [cjValidationState]
+  );
   const selectedRows = useMemo(
-    () => rows.filter((row) => Boolean(selectedIds[row.id])),
-    [rows, selectedIds]
+    () => filteredRows.filter((row) => Boolean(selectedIds[row.id])),
+    [filteredRows, selectedIds]
   );
 
   const handleBuildPostPackage = () => {
@@ -489,8 +641,14 @@ export default function ResultsClientPage() {
             <input className="field w-full max-w-md" value={`Results for "${keyword || "all products"}"`} readOnly />
           </div>
           <p className="mb-2 text-xs text-slate-500">
-            {loading ? "Loading results..." : `Showing ${visibleRows.length} of ${rows.length} loaded · ${selectedCount} selected`}
+            {loading ? "Loading results..." : `Showing ${visibleRows.length} of ${filteredRows.length} results · ${selectedCount} selected`}
           </p>
+          {!loading && ENABLE_CJ_LINK_VALIDATION && pendingCjValidations > 0 ? (
+            <p className="mb-2 text-xs text-slate-500">Validating links... {pendingCjValidations} pending</p>
+          ) : null}
+          {!loading && invalidNoticeCount > 0 ? (
+            <p className="mb-2 text-xs text-amber-700">{invalidNoticeCount} invalid selected product(s) removed.</p>
+          ) : null}
           {error ? <p className="mb-2 text-sm text-red-600">{error}</p> : null}
 
           {loading ? (
@@ -580,7 +738,12 @@ export default function ResultsClientPage() {
                       </div>
                     </td>
                     <td className="border-t border-slate-200 text-sm">
-                      <span className={`badge ${row.platform === "CJ" ? "badge-cj" : "badge-imp"}`}>{row.platform}</span>
+                      <div className="flex items-center gap-2">
+                        <span className={`badge ${row.platform === "CJ" ? "badge-cj" : "badge-imp"}`}>{row.platform}</span>
+                        {row.platform === "CJ" && cjValidationState[row.id] === "pending" ? (
+                          <span className="text-[11px] text-slate-400">validating...</span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="border-t border-slate-200 text-sm">{toCurrency(row.price)}</td>
                     <td className="border-t border-slate-200 text-sm">
@@ -637,7 +800,7 @@ export default function ResultsClientPage() {
           <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur">
             <div className="flex w-full items-center justify-end px-4 py-3 md:px-6">
               <div className="flex gap-2">
-              <button type="button" onClick={handleBuildPostPackage} className="btn-primary">Review selection → Step 3</button>
+              <button type="button" onClick={handleBuildPostPackage} className="btn-primary">Review selection</button>
               </div>
             </div>
           </div>

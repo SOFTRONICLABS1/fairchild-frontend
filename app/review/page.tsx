@@ -57,7 +57,7 @@ export default function ReviewPage() {
           <div className="space-y-3">
             <div className="mb-1 flex items-center justify-between">
               <h2 className="text-lg font-semibold">Review your selection</h2>
-              <Link href={resultsHref} className="btn-secondary" onClick={markResultsRestore}>+ Add more products</Link>
+              {/* + Add more products hidden for now */}
             </div>
             <p className="mb-2 text-sm text-slate-500">{count} products selected. Remove unwanted items before continuing.</p>
             {items.map((item) => (
@@ -93,8 +93,8 @@ export default function ReviewPage() {
               <div className="flex justify-between"><span className="text-slate-500">Platforms</span><span>{Array.from(new Set(items.map((item) => item.platform))).join(", ") || "-"}</span></div>
             </div>
             <div className="mt-4 flex flex-col gap-2">
-              <Link href={resultsHref} className="btn-secondary text-center" onClick={markResultsRestore}>Back to results</Link>
-              <Link href="/template" className="btn-primary text-center">Continue to template Selection</Link>
+              <Link href={resultsHref} className="btn-secondary text-center" onClick={markResultsRestore}>Back to Results</Link>
+              <Link href="/template" className="btn-primary text-center">Continue to Template Selection</Link>
             </div>
           </aside>
           <div className="lg:col-span-2">

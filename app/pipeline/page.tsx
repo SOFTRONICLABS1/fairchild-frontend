@@ -33,7 +33,9 @@ type PostPackage = {
   Image_editing_text: string;
   name: string;
   type: "external";
-  status: "draft";
+  status: "draft" | "pending" | "private" | "publish";
+  metricool_schedule_datetime: string;
+  metricool_status: "draft" | "publish";
   featured: boolean;
   catalog_visibility: "visible";
   description: string;
@@ -99,7 +101,7 @@ type MetricoolPayload = {
   };
 };
 
-type WordPressProductPayload = Omit<PostPackage, "Image_editing_text">;
+type WordPressProductPayload = Omit<PostPackage, "Image_editing_text" | "metricool_schedule_datetime" | "metricool_status">;
 
 const PIPELINE_STEPS = [
   "Create post package",
@@ -243,7 +245,9 @@ export default function PipelinePage() {
       Image_editing_text: "Keyname_Value",
       name: product.product || "Keyname_Value",
       type: "external",
-      status: "draft",
+      status: "publish",
+      metricool_schedule_datetime: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19),
+      metricool_status: "publish",
       featured: true,
       catalog_visibility: "visible",
       description: "Keyname_Value",
@@ -358,14 +362,19 @@ Context:
     }
   };
 
-  const buildMetricoolPayload = (mediaUrl: string, text: string): MetricoolPayload => {
-    const now = new Date();
-    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    const dateTime = tomorrow.toISOString().slice(0, 19);
+  const buildMetricoolPayload = (
+    mediaUrl: string,
+    text: string,
+    scheduleDateTime: string,
+    metricoolStatus: "draft" | "publish"
+  ): MetricoolPayload => {
+    const fallback = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
+    const dateTime = (scheduleDateTime || fallback).replace(" ", "T").slice(0, 19);
+    const draft = metricoolStatus === "draft";
     return {
       text,
       autoPublish: true,
-      draft: true,
+      draft,
       publicationDate: {
         dateTime,
         timezone: "America/Denver"
@@ -494,7 +503,12 @@ Context:
           const mediaUrl = mediaUploadData.guid?.rendered ?? "";
           const wpPermalink = wpProductData.permalink ?? "";
           const metricoolText = await generateMetricoolText(product, basePostPackage, wpPermalink);
-          const metricoolPayload = buildMetricoolPayload(mediaUrl, metricoolText);
+          const metricoolPayload = buildMetricoolPayload(
+            mediaUrl,
+            metricoolText,
+            basePostPackage.metricool_schedule_datetime,
+            basePostPackage.metricool_status
+          );
           await http.post(
             "/api/v1/metricool/scheduler/posts",
             metricoolPayload,
@@ -547,7 +561,7 @@ Context:
     <>
       <TopNav />
       <FlowStepper active={6} />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", minHeight: "calc(100vh - var(--nav-h) - var(--stepper-h))", gap: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", minHeight: "calc(100vh - var(--nav-h) - var(--stepper-h))", gap: 0 }}>
         <div style={{ padding: 24, borderRight: "1px solid var(--border)", overflowY: "auto" }}>
           <div className={statusBannerClass}>
             <div className="status-icon">{statusIcon}</div>
@@ -651,7 +665,7 @@ Context:
           ) : null}
         </div>
 
-        <div style={{ padding: 20, background: "var(--bg)", overflowY: "auto" }}>
+        <div style={{ padding: "20px 24px 20px 18px", background: "var(--bg)", overflowY: "auto" }}>
           <div className="section-title" style={{ marginBottom: 14 }}>Run summary</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
             <div className="card card-pad" style={{ textAlign: "center" }}>
@@ -672,37 +686,47 @@ Context:
             </div>
           </div>
 
-          <div className="card card-pad" style={{ marginBottom: 14 }}>
+          <div className="card card-pad" style={{ marginBottom: 14, padding: "16px 14px" }}>
             <div className="section-title" style={{ marginBottom: 10 }}>Configuration</div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
-              <span style={{ color: "var(--text-3)" }}>Template</span><strong>{selectedTemplateName ?? selectedTemplateId ?? "Not selected"}</strong>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: 13, padding: "10px 0", borderBottom: "1px solid var(--border)", lineHeight: 1.45 }}>
+              <span style={{ color: "var(--text-3)", fontWeight: 500 }}>Template</span>
+              <strong style={{ textAlign: "right", maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {selectedTemplateName ?? selectedTemplateId ?? "Not selected"}
+              </strong>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
-              <span style={{ color: "var(--text-3)" }}>WordPress</span><span style={{ color: "var(--green)", fontWeight: 500 }}>{options.wordpress ? "On" : "Off"}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: 13, padding: "10px 0", borderBottom: "1px solid var(--border)", lineHeight: 1.45 }}>
+              <span style={{ color: "var(--text-3)", fontWeight: 500 }}>WordPress</span><span style={{ color: "var(--green)", fontWeight: 600 }}>{options.wordpress ? "On" : "Off"}</span>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
-              <span style={{ color: "var(--text-3)" }}>Metricool</span><span style={{ color: "var(--green)", fontWeight: 500 }}>{options.metricool ? "On" : "Off"}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: 13, padding: "10px 0", borderBottom: "1px solid var(--border)", lineHeight: 1.45 }}>
+              <span style={{ color: "var(--text-3)", fontWeight: 500 }}>Metricool</span><span style={{ color: "var(--green)", fontWeight: 600 }}>{options.metricool ? "On" : "Off"}</span>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
-              <span style={{ color: "var(--text-3)" }}>GPT content</span><span style={{ color: "var(--green)", fontWeight: 500 }}>{options.gpt ? "On" : "Off"}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: 13, padding: "10px 0", borderBottom: "1px solid var(--border)", lineHeight: 1.45 }}>
+              <span style={{ color: "var(--text-3)", fontWeight: 500 }}>GPT content</span><span style={{ color: "var(--green)", fontWeight: 600 }}>{options.gpt ? "On" : "Off"}</span>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0" }}>
-              <span style={{ color: "var(--text-3)" }}>Image edit</span><span style={{ color: "var(--green)", fontWeight: 500 }}>{options.imageEdit ? "On" : "Off"}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: 13, padding: "10px 0 2px", lineHeight: 1.45 }}>
+              <span style={{ color: "var(--text-3)", fontWeight: 500 }}>Image edit</span><span style={{ color: "var(--green)", fontWeight: 600 }}>{options.imageEdit ? "On" : "Off"}</span>
             </div>
           </div>
 
-          <div className="card card-pad" style={{ marginBottom: 16 }}>
+          <div className="card card-pad" style={{ marginBottom: 16, padding: "16px 14px" }}>
             <div className="section-title" style={{ marginBottom: 10 }}>Edit previous step</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <a className="btn btn-sm" href="/review" style={{ justifyContent: "space-between" }}>Products <span>→</span></a>
-              <a className="btn btn-sm" href="/template" style={{ justifyContent: "space-between" }}>Template <span>→</span></a>
-              <a className="btn btn-sm" href="/package" style={{ justifyContent: "space-between" }}>Post package <span>→</span></a>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
+              <a className="btn btn-sm" href="/review" style={{ justifyContent: "space-between", padding: "10px 12px", borderColor: "var(--border)" }}>Products <span>→</span></a>
+              <a className="btn btn-sm" href="/template" style={{ justifyContent: "space-between", padding: "10px 12px", borderColor: "var(--border)" }}>Template <span>→</span></a>
+              <a className="btn btn-sm" href="/package" style={{ justifyContent: "space-between", padding: "10px 12px", borderColor: "var(--border)" }}>Post package <span>→</span></a>
             </div>
           </div>
 
-          <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={runPipeline} disabled={pipelineRunning}>
-            {pipelineRunning ? "Running..." : "▶ Start pipeline"}
-          </button>
+          {pipelineStarted && !pipelineRunning && !pipelineError ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              <button className="btn btn-lg" style={{ width: "100%", background: "var(--green-soft)", color: "var(--green)", border: "1px solid var(--green-soft)" }} disabled>
+                ✓ Completed
+              </button>
+              <a className="btn btn-primary btn-lg" style={{ width: "100%", textAlign: "center" }} href="/search">
+                Back to Home
+              </a>
+            </div>
+          ) : null}
 
           {loadingTemplates ? <p className="mt-2 text-xs text-slate-500">Loading templates...</p> : null}
           {templatesError ? <p className="mt-2 text-xs text-red-600">{templatesError}</p> : null}

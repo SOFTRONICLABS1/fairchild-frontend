@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import TopNav, { NavButton } from "@/components/flow/top-nav";
+import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 
@@ -28,6 +28,10 @@ export default function SearchPage() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiAlternates, setAiAlternates] = useState<string[]>([]);
+
+  const comingSoon = () => {
+    window.alert("Coming soon");
+  };
 
   const runSearch = () => {
     const trimmed = keyword.trim();
@@ -195,7 +199,15 @@ User request: ${promptInput}
 
   return (
     <>
-      <TopNav right={<><span className="text-xs text-slate-500">All systems live</span><NavButton href="/history" label="History" /><NavButton href="/settings" label="Settings" /></>} />
+      <TopNav
+        right={
+          <>
+            <span className="text-xs text-slate-500">All systems live</span>
+            <button type="button" className="btn-secondary" onClick={comingSoon}>History</button>
+            <button type="button" className="btn-secondary" onClick={comingSoon}>Settings</button>
+          </>
+        }
+      />
       <FlowStepper active={1} />
       <div className="page-wrap">
         <div className="mx-auto max-w-[620px] text-center">
@@ -277,15 +289,11 @@ User request: ${promptInput}
           <div className="mb-8 flex flex-wrap justify-center gap-2">
             <button type="button" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-500" onClick={() => setAiQuery("most discounted products in CJ")}>Most discounted in CJ</button>
             <button type="button" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-500" onClick={() => setAiQuery("top rated electronics on Impact")}>Top electronics on Impact</button>
-            <button type="button" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-500" onClick={() => setAiQuery("highest commission rate products")}>Best commission rate</button>
+            <button type="button" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-500" onClick={() => setAiQuery("best selling products")}>Best sellers</button>
             <button type="button" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-500" onClick={() => setAiQuery("new arrivals this week")}>New arrivals</button>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
-            <div className="stat"><p className="text-xl font-medium">142</p><p className="text-xs text-slate-500">Posts created</p></div>
-            <div className="stat"><p className="text-xl font-medium">38</p><p className="text-xs text-slate-500">Products saved</p></div>
-            <div className="stat"><p className="text-xl font-medium">12</p><p className="text-xs text-slate-500">Scheduled today</p></div>
-          </div>
+          {/* Stats block hidden for now */}
         </div>
       </div>
     </>

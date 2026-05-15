@@ -23,7 +23,9 @@ type PostPackage = {
   Image_editing_text: string;
   name: string;
   type: "external";
-  status: "draft";
+  status: "draft" | "pending" | "private" | "publish";
+  metricool_schedule_datetime: string;
+  metricool_status: "draft" | "publish";
   featured: boolean;
   catalog_visibility: "visible";
   description: string;
@@ -42,9 +44,78 @@ type AIPackageFields = {
   description?: string;
   short_description?: string;
   button_text?: string;
+  metricool_schedule_datetime?: string;
 };
 
 const AI_MODELS = ["claude-sonnet-4-5"];
+
+function formatLocalDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getDefaultMetricoolSchedule(): string {
+  const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  future.setMinutes(0, 0, 0);
+  future.setHours(10);
+  return `${formatLocalDate(future)}T10:00:00`;
+}
+
+function parseScheduleParts(value: string): { date: string; hour12: string; minute: string; period: "AM" | "PM" } {
+  const fallbackDate = formatLocalDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
+  if (!value || !value.includes("T")) {
+    return { date: fallbackDate, hour12: "10", minute: "00", period: "AM" };
+  }
+  const [datePart, timePartRaw] = value.split("T");
+  const [hourRaw = "10", minuteRaw = "00"] = timePartRaw.split(":");
+  const hour24 = Number(hourRaw);
+  if (!Number.isFinite(hour24)) {
+    return { date: datePart || fallbackDate, hour12: "10", minute: "00", period: "AM" };
+  }
+  const period: "AM" | "PM" = hour24 >= 12 ? "PM" : "AM";
+  const hour12Num = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return {
+    date: datePart || fallbackDate,
+    hour12: String(hour12Num).padStart(2, "0"),
+    minute: String(Number(minuteRaw) || 0).padStart(2, "0"),
+    period
+  };
+}
+
+function buildScheduleIso(date: string, hour12: string, minute: string, period: "AM" | "PM"): string {
+  const baseHour = Number(hour12) % 12;
+  const hour24 = period === "PM" ? baseHour + 12 : baseHour;
+  return `${date}T${String(hour24).padStart(2, "0")}:${minute}:00`;
+}
+
+function clampScheduleWithinWindow(input: string): string {
+  const now = new Date();
+  const min = new Date(now.getTime() + 60 * 60 * 1000);
+  const max = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const parsed = new Date(input);
+  if (!Number.isFinite(parsed.getTime())) return getDefaultMetricoolSchedule();
+  if (parsed < min) return `${formatLocalDate(min)}T${String(min.getHours()).padStart(2, "0")}:${String(min.getMinutes()).padStart(2, "0")}:00`;
+  if (parsed > max) return `${formatLocalDate(max)}T${String(max.getHours()).padStart(2, "0")}:${String(max.getMinutes()).padStart(2, "0")}:00`;
+  return `${formatLocalDate(parsed)}T${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}:00`;
+}
+
+function normalizeTypedTime(value: string): { hour12: string; minute: string } {
+  const cleaned = value.trim();
+  const match = cleaned.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!match) return { hour12: "10", minute: "00" };
+  let hour = Number(match[1]);
+  let minute = Number(match[2]);
+  if (!Number.isFinite(hour) || hour < 1) hour = 1;
+  if (hour > 12) hour = 12;
+  if (!Number.isFinite(minute) || minute < 0) minute = 0;
+  if (minute > 59) minute = 59;
+  return {
+    hour12: String(hour).padStart(2, "0"),
+    minute: String(minute).padStart(2, "0")
+  };
+}
 
 function normalizeName(title: string): string {
   return title
@@ -81,7 +152,9 @@ function createPackage(product: SelectedProduct): PostPackage {
     Image_editing_text: "Keyname_Value",
     name: normalizeName(product.product),
     type: "external",
-    status: "draft",
+    status: "publish",
+    metricool_schedule_datetime: getDefaultMetricoolSchedule(),
+    metricool_status: "publish",
     featured: true,
     catalog_visibility: "visible",
     description: "Keyname_Value",
@@ -109,6 +182,7 @@ export default function PackagePage() {
   const [regeneratingFields, setRegeneratingFields] = useState<Record<string, boolean>>({});
   const [aiReadyByProduct, setAiReadyByProduct] = useState<Record<string, boolean>>({});
   const [initialGeneratingIndex, setInitialGeneratingIndex] = useState<number | null>(null);
+  const [scheduleTimeInput, setScheduleTimeInput] = useState("10:00");
 
   useEffect(() => {
     const raw = sessionStorage.getItem("pipeline:selected-products");
@@ -163,9 +237,10 @@ export default function PackagePage() {
   const generateFieldsWithAI = async (
     product: SelectedProduct,
     base: PostPackage,
-    fields: Array<keyof PostPackage>
+    fields: Array<keyof PostPackage>,
+    mode: "default" | "force_variation" = "default"
   ): Promise<AIPackageFields> => {
-    const allowed = ["Image_editing_text", "name", "description", "short_description", "button_text"];
+    const allowed = ["Image_editing_text", "name", "description", "short_description", "button_text", "metricool_schedule_datetime"];
     const requested = fields.filter((field) => allowed.includes(field));
     if (requested.length === 0) return {};
 
@@ -179,6 +254,7 @@ Allowed keys:
 - description: 2-4 sentence marketing copy
 - short_description: one concise sentence
 - button_text: CTA text
+- metricool_schedule_datetime: local datetime in format YYYY-MM-DDTHH:mm:ss
 
 Generate ONLY these keys: ${requested.join(", ")}
 
@@ -199,6 +275,8 @@ Rules:
 - Keep output concise and relevant.
 - Use product title and external_url/url_hint_tokens to infer the actual item accurately.
 - If generating button_text, keep default style close to "Buy Now".
+- If generating metricool_schedule_datetime, choose best posting time between 1 hour from now and within next 24 hours.
+${mode === "force_variation" ? "- Generate a clearly different variation than the previous value for each requested key." : ""}
 `.trim();
 
     const response = await http.post("/api/v1/claude/generate", {
@@ -228,8 +306,30 @@ Rules:
     if (parsed.name) parsed.name = normalizeName(parsed.name);
     if (parsed.Image_editing_text) parsed.Image_editing_text = parsed.Image_editing_text.trim().split(/\s+/).slice(0, 3).join(" ");
     if (parsed.button_text && !parsed.button_text.trim()) parsed.button_text = "Buy Now";
+    if (parsed.metricool_schedule_datetime) {
+      parsed.metricool_schedule_datetime = clampScheduleWithinWindow(parsed.metricool_schedule_datetime);
+    }
 
     return parsed;
+  };
+
+  const pickFieldValue = (payload: AIPackageFields, key: keyof PostPackage): string => {
+    switch (key) {
+      case "Image_editing_text":
+        return payload.Image_editing_text ?? "";
+      case "name":
+        return payload.name ?? "";
+      case "description":
+        return payload.description ?? "";
+      case "short_description":
+        return payload.short_description ?? "";
+      case "button_text":
+        return payload.button_text ?? "";
+      case "metricool_schedule_datetime":
+        return payload.metricool_schedule_datetime ?? "";
+      default:
+        return "";
+    }
   };
 
   const applyGeneratedFields = (index: number, generated: AIPackageFields) => {
@@ -244,6 +344,8 @@ Rules:
         description: generated.description ?? current.description,
         short_description: generated.short_description ?? current.short_description,
         button_text: generated.button_text ?? current.button_text
+        ,
+        metricool_schedule_datetime: generated.metricool_schedule_datetime ?? current.metricool_schedule_datetime
       };
       sessionStorage.setItem("pipeline:post-packages", JSON.stringify(next));
       return next;
@@ -257,7 +359,24 @@ Rules:
     setAiError(null);
     setFieldLoading(index, key, true);
     try {
-      const generated = await generateFieldsWithAI(activeProduct, activePackage, [key]);
+      const currentValue = activePackage[key];
+      const firstTry = await generateFieldsWithAI(activeProduct, activePackage, [key], "default");
+      let nextValue = pickFieldValue(firstTry, key).trim();
+      let generated = firstTry;
+
+      if (!nextValue || nextValue === String(currentValue ?? "").trim()) {
+        const secondTry = await generateFieldsWithAI(activeProduct, activePackage, [key], "force_variation");
+        const secondValue = pickFieldValue(secondTry, key).trim();
+        if (secondValue && secondValue !== String(currentValue ?? "").trim()) {
+          generated = secondTry;
+          nextValue = secondValue;
+        }
+      }
+
+      if (!nextValue || nextValue === String(currentValue ?? "").trim()) {
+        throw new Error("Regenerate returned same content. Try again.");
+      }
+
       applyGeneratedFields(index, generated);
     } catch (error) {
       setAiError(error instanceof Error ? error.message : "Failed to regenerate field");
@@ -277,7 +396,8 @@ Rules:
         "name",
         "description",
         "short_description",
-        "button_text"
+        "button_text",
+        "metricool_schedule_datetime"
       ]);
       applyGeneratedFields(index, generated);
     } catch (error) {
@@ -307,7 +427,8 @@ Rules:
             "name",
             "description",
             "short_description",
-            "button_text"
+            "button_text",
+            "metricool_schedule_datetime"
           ]);
           nextPackages[index] = {
             ...current,
@@ -315,7 +436,8 @@ Rules:
             name: generated.name ?? current.name,
             description: generated.description ?? current.description,
             short_description: generated.short_description ?? current.short_description,
-            button_text: generated.button_text ?? current.button_text
+            button_text: generated.button_text ?? current.button_text,
+            metricool_schedule_datetime: generated.metricool_schedule_datetime ?? current.metricool_schedule_datetime
           };
           nextReady[product.id] = true;
         }
@@ -336,6 +458,15 @@ Rules:
     if (products.length === 0) return false;
     return products.every((product) => aiReadyByProduct[product.id]);
   }, [aiReadyByProduct, products]);
+
+  const activeScheduleParts = useMemo(
+    () => parseScheduleParts(activePackage?.metricool_schedule_datetime ?? ""),
+    [activePackage?.metricool_schedule_datetime]
+  );
+
+  useEffect(() => {
+    setScheduleTimeInput(`${activeScheduleParts.hour12}:${activeScheduleParts.minute}`);
+  }, [activeScheduleParts.hour12, activeScheduleParts.minute, activeIndex]);
 
   return (
     <>
@@ -394,7 +525,7 @@ Rules:
           {activePackage ? (
             <div className="space-y-3">
               <Field
-                label="Image editing text"
+                label="Image text"
                 value={activePackage.Image_editing_text}
                 onChange={(value) => patchActive("Image_editing_text", value)}
                 onRegenerate={() => void regenField("Image_editing_text")}
@@ -409,15 +540,7 @@ Rules:
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:name`])}
                 initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
               />
-              <Field
-                label="Description"
-                multiline
-                value={activePackage.description}
-                onChange={(value) => patchActive("description", value)}
-                onRegenerate={() => void regenField("description")}
-                regenerating={Boolean(regeneratingFields[`${activeIndex}:description`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
-              />
+              
               <Field
                 label="Short description"
                 multiline
@@ -428,6 +551,15 @@ Rules:
                 initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
               />
               <Field
+                label="Long Description"
+                multiline
+                value={activePackage.description}
+                onChange={(value) => patchActive("description", value)}
+                onRegenerate={() => void regenField("description")}
+                regenerating={Boolean(regeneratingFields[`${activeIndex}:description`])}
+                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+              />
+              <Field
                 label="Call to action"
                 value={activePackage.button_text}
                 onChange={(value) => patchActive("button_text", value)}
@@ -435,6 +567,126 @@ Rules:
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:button_text`])}
                 initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
               />
+              <div className="card p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Wordpress status</span>
+                </div>
+                <select
+                  className="field"
+                  value={activePackage.status}
+                  onChange={(event) => patchActive("status", event.target.value as PostPackage["status"])}
+                >
+                  <option value="draft">draft</option>
+                  <option value="pending">pending</option>
+                  <option value="private">private</option>
+                  <option value="publish">publish</option>
+                </select>
+              </div>
+              <div className="card p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Metricool schedule date and time</span>
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-[#185FA5] disabled:opacity-50"
+                    disabled={Boolean(regeneratingFields[`${activeIndex}:metricool_schedule_datetime`])}
+                    onClick={() => void regenField("metricool_schedule_datetime")}
+                  >
+                    {regeneratingFields[`${activeIndex}:metricool_schedule_datetime`] ? "Generating..." : "✦ Regenerate"}
+                  </button>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-4">
+                  <input
+                    className="field sm:col-span-2"
+                    type="date"
+                    value={activeScheduleParts.date}
+                    onChange={(event) =>
+                      patchActive(
+                        "metricool_schedule_datetime",
+                        buildScheduleIso(
+                          event.target.value,
+                          activeScheduleParts.hour12,
+                          activeScheduleParts.minute,
+                          activeScheduleParts.period
+                        )
+                      )
+                    }
+                  />
+                  <input
+                    className="field"
+                    list="metricool-time-options"
+                    value={scheduleTimeInput}
+                    onChange={(event) => {
+                      const nextRaw = event.target.value;
+                      setScheduleTimeInput(nextRaw);
+                      const match = nextRaw.trim().match(/^(\d{1,2}):(\d{1,2})$/);
+                      if (!match) return;
+                      const { hour12, minute } = normalizeTypedTime(nextRaw);
+                      patchActive(
+                        "metricool_schedule_datetime",
+                        buildScheduleIso(
+                          activeScheduleParts.date,
+                          hour12,
+                          minute,
+                          activeScheduleParts.period
+                        )
+                      );
+                    }}
+                    onBlur={() => {
+                      const { hour12, minute } = normalizeTypedTime(scheduleTimeInput);
+                      setScheduleTimeInput(`${hour12}:${minute}`);
+                      patchActive(
+                        "metricool_schedule_datetime",
+                        buildScheduleIso(
+                          activeScheduleParts.date,
+                          hour12,
+                          minute,
+                          activeScheduleParts.period
+                        )
+                      );
+                    }}
+                  />
+                  <datalist id="metricool-time-options">
+                    {Array.from({ length: 12 }).flatMap((_, index) => {
+                      const hour = String(index + 1).padStart(2, "0");
+                      const minutes = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"];
+                      return minutes.map((minute) => (
+                        <option key={`${hour}:${minute}`} value={`${hour}:${minute}`} />
+                      ));
+                    })}
+                  </datalist>
+                  <select
+                    className="field"
+                    value={activeScheduleParts.period}
+                    onChange={(event) =>
+                      patchActive(
+                        "metricool_schedule_datetime",
+                        buildScheduleIso(
+                          activeScheduleParts.date,
+                          activeScheduleParts.hour12,
+                          activeScheduleParts.minute,
+                          event.target.value as "AM" | "PM"
+                        )
+                      )
+                    }
+                  >
+                    <option value="AM">AM</option>
+                    <option value="PM">PM</option>
+                  </select>
+                </div>
+              </div>
+              <div className="card p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Metricool status</span>
+                </div>
+                <select
+                  className="field"
+                  value={activePackage.metricool_status}
+                  onChange={(event) => patchActive("metricool_status", event.target.value as PostPackage["metricool_status"])}
+                >
+                  <option value="draft">draft</option>
+                  <option value="publish">publish</option>
+                </select>
+              </div>
 
             </div>
           ) : (
@@ -462,15 +714,15 @@ Rules:
           <div className="card p-4" style={{ marginBottom: 14 }}>
             <p className="mb-3 text-sm font-semibold">Actions</p>
             <div className="flex flex-col gap-2">
+              <Link className="btn-secondary text-center" href="/template">Back to Template</Link>
               <button
                 type="button"
-                className="btn btn-primary text-left disabled:cursor-not-allowed disabled:opacity-60"
+                className="btn-primary text-center disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={!allProductsAiReady || regeneratingAll}
                 onClick={() => router.push("/pipeline")}
               >
-                Start pipeline → Step 6
+                Start Pipeline
               </button>
-              <Link className="btn btn-secondary" href="/template">← Back to template</Link>
             </div>
             {!allProductsAiReady ? (
               <p className="mt-2 text-xs text-slate-500">
