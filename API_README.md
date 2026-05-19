@@ -157,20 +157,24 @@ Based on post package, but without `Image_editing_text` and with real media ID:
 - `POST /metricool/scheduler/posts?userId=1981059&blogId=3410405`
 
 ### Core dynamic fields
-- `text`: `"Automation Test\n<permalink_template>"`
+- `text`: AI-generated social text + `Buy now: <wordpress permalink>` + hashtags
 - `media`: `[ "<wordpress media guid.rendered>" ]`
-- `publicationDate.dateTime`: tomorrow datetime
+- `publicationDate.dateTime`: from post package `metricool_schedule_datetime`
 - `publicationDate.timezone`: `"America/Denver"`
 - `autoPublish`: `true`
-- `draft`: `true`
+- `draft`: derived from post package `metricool_status` (`draft` => `true`, `publish` => `false`)
+- `providers`: includes Pinterest network
+- `pinterestData.boardId`: selected dynamically from Pinterest boards API
+- `pinterestData.pinTitle`: product post title
+- `pinterestData.pinLink`: WordPress product permalink
 
 ### Payload shape used
 
 ```json
 {
-  "text": "Automation Test\n<permalink_template>",
+  "text": "<ai generated text>\nBuy now: <wordpress permalink>\n#tags",
   "autoPublish": true,
-  "draft": true,
+  "draft": false,
   "publicationDate": {
     "dateTime": "YYYY-MM-DDTHH:mm:ss",
     "timezone": "America/Denver"
@@ -196,6 +200,7 @@ Based on post package, but without `Image_editing_text` and with real media ID:
   "performanceDashboardIds": [],
   "providers": [
     { "network": "twitter" },
+    { "network": "pinterest" },
     { "network": "facebook" },
     { "network": "instagram" },
     { "network": "threads" },
@@ -203,6 +208,12 @@ Based on post package, but without `Image_editing_text` and with real media ID:
     { "network": "gmb" },
     { "network": "tiktok" }
   ],
+  "pinterestData": {
+    "boardId": "<dynamic board id>",
+    "pinTitle": "<product title>",
+    "pinLink": "<wordpress product permalink>",
+    "pinNewFormat": false
+  },
   "shortener": false,
   "smartLinkData": { "ids": [] },
   "threadsData": {
@@ -229,6 +240,16 @@ Based on post package, but without `Image_editing_text` and with real media ID:
 }
 ```
 
+### Pinterest board selection rule
+- Boards source API:
+  - `GET /metricool/scheduler/boards/pinterest?userId=1981059&blogId=3410405`
+- Matching priority:
+  1. Product title based match (normalized exact/contains/token score)
+  2. Source brand match:
+     - CJ: `advertiserName` (stored as `companyName`)
+     - Impact: `CampaignName` (stored as `companyName`)
+  3. Fallback: first board in API response
+
 ---
 
 ## Runtime Notes
@@ -240,4 +261,3 @@ Based on post package, but without `Image_editing_text` and with real media ID:
   - `done`
   - `failed`
 - If any step fails for a product, pipeline stops and shows error.
-

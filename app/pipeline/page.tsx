@@ -76,6 +76,12 @@ type MetricoolPayload = {
   mediaAltText: Array<null>;
   performanceDashboardIds: unknown[];
   providers: Array<{ network: string }>;
+  pinterestData: {
+    boardId: string;
+    pinTitle: string;
+    pinLink: string;
+    pinNewFormat: boolean;
+  };
   shortener: boolean;
   smartLinkData: { ids: unknown[] };
   threadsData: {
@@ -101,6 +107,11 @@ type MetricoolPayload = {
   };
 };
 
+type PinterestBoard = {
+  id: string;
+  name: string;
+};
+
 type WordPressProductPayload = Omit<PostPackage, "Image_editing_text" | "metricool_schedule_datetime" | "metricool_status">;
 
 const PIPELINE_STEPS = [
@@ -110,8 +121,78 @@ const PIPELINE_STEPS = [
   "Schedule to Metricool"
 ];
 
+function normalizeForMatch(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/['’`]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenize(value: string): string[] {
+  return normalizeForMatch(value)
+    .split(" ")
+    .filter((token) => token.length >= 2);
+}
+
+function pickBestPinterestBoard(
+  productTitle: string,
+  companyName: string | undefined,
+  boards: PinterestBoard[]
+): { board: PinterestBoard; reason: "title" | "company" | "fallback" } | null {
+  if (boards.length === 0) return null;
+
+  const titleNormalized = normalizeForMatch(productTitle);
+  const titleTokens = tokenize(productTitle).slice(0, 5);
+  const companyNormalized = normalizeForMatch(companyName ?? "");
+  const companyTokens = tokenize(companyName ?? "");
+
+  const scoreBoard = (boardName: string) => {
+    const boardNormalized = normalizeForMatch(boardName);
+    let titleScore = 0;
+    let companyScore = 0;
+
+    if (boardNormalized === titleNormalized) titleScore += 1000;
+    if (titleNormalized.includes(boardNormalized) || boardNormalized.includes(titleNormalized)) titleScore += 350;
+    titleTokens.forEach((token) => {
+      if (boardNormalized === token) titleScore += 260;
+      else if (boardNormalized.startsWith(token)) titleScore += 180;
+      else if (boardNormalized.includes(token)) titleScore += 120;
+    });
+
+    if (companyNormalized) {
+      if (boardNormalized === companyNormalized) companyScore += 900;
+      if (companyNormalized.includes(boardNormalized) || boardNormalized.includes(companyNormalized)) companyScore += 300;
+      companyTokens.forEach((token) => {
+        if (boardNormalized === token) companyScore += 220;
+        else if (boardNormalized.startsWith(token)) companyScore += 140;
+        else if (boardNormalized.includes(token)) companyScore += 100;
+      });
+    }
+
+    return { titleScore, companyScore, total: titleScore + companyScore };
+  };
+
+  const scored = boards
+    .map((board) => ({ board, ...scoreBoard(board.name) }))
+    .sort((a, b) => b.total - a.total);
+
+  const best = scored[0];
+  if (!best || best.total <= 0) {
+    return { board: boards[0], reason: "fallback" };
+  }
+  if (best.titleScore > 0) {
+    return { board: best.board, reason: "title" };
+  }
+  if (best.companyScore > 0) {
+    return { board: best.board, reason: "company" };
+  }
+  return { board: boards[0], reason: "fallback" };
+}
+
 export default function PipelinePage() {
-  const [selectedProducts, setSelectedProducts] = useState<SelectedProduct[]>([]);
+  const [selectedProducts, setSelectedProducts] = useState<StoredPipelineProduct[]>([]);
   const [productReady, setProductReady] = useState<Record<string, boolean>>({});
   const [productStates, setProductStates] = useState<Record<string, ProductRunState>>({});
   const [productStepStates, setProductStepStates] = useState<Record<string, StepState[]>>({});
@@ -139,7 +220,7 @@ export default function PipelinePage() {
     const raw = sessionStorage.getItem("pipeline:selected-products");
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw) as SelectedProduct[];
+      const parsed = JSON.parse(raw) as StoredPipelineProduct[];
       setSelectedProducts(parsed);
       const readyMap: Record<string, boolean> = {};
       const stateMap: Record<string, ProductRunState> = {};
@@ -373,7 +454,10 @@ Context:
     mediaUrl: string,
     text: string,
     scheduleDateTime: string,
-    metricoolStatus: "draft" | "publish"
+    metricoolStatus: "draft" | "publish",
+    pinterestBoardId: string,
+    pinTitle: string,
+    pinLink: string
   ): MetricoolPayload => {
     const fallback = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
     const dateTime = (scheduleDateTime || fallback).replace(" ", "T").slice(0, 19);
@@ -407,6 +491,7 @@ Context:
       performanceDashboardIds: [],
       providers: [
         { network: "twitter" },
+        { network: "pinterest" },
         { network: "facebook" },
         { network: "instagram" },
         { network: "threads" },
@@ -414,6 +499,12 @@ Context:
         { network: "gmb" },
         { network: "tiktok" }
       ],
+      pinterestData: {
+        boardId: pinterestBoardId,
+        pinTitle,
+        pinLink,
+        pinNewFormat: false
+      },
       shortener: false,
       smartLinkData: { ids: [] },
       threadsData: {
@@ -459,6 +550,19 @@ Context:
     setCreatedWpProducts([]);
     setLogLines([]);
     pushLog("info", `Pipeline started for ${readyProducts.length} products`);
+
+    let pinterestBoards: PinterestBoard[] = [];
+    try {
+      const boardsResponse = await http.get("/api/v1/metricool/scheduler/boards/pinterest", {
+        params: { userId: "1981059", blogId: "3410405" }
+      });
+      const boardsData = unwrapEnvelope<{ data?: PinterestBoard[] }>(boardsResponse.data);
+      pinterestBoards = boardsData?.data ?? [];
+      pushLog("ok", `Pinterest boards fetched: ${pinterestBoards.length}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to fetch Pinterest boards";
+      pushLog("warn", `Pinterest boards fetch failed, continuing with no boards: ${message}`);
+    }
 
     for (const product of readyProducts) {
       resetProductSteps(product.id);
@@ -510,11 +614,23 @@ Context:
           const mediaUrl = mediaUploadData.guid?.rendered ?? "";
           const wpPermalink = wpProductData.permalink ?? "";
           const metricoolText = await generateMetricoolText(product, basePostPackage, wpPermalink);
+          const boardMatch = pickBestPinterestBoard(product.product, product.companyName, pinterestBoards);
+          if (!boardMatch) {
+            throw new Error("No Pinterest boards available to post.");
+          }
+          if (boardMatch.reason === "fallback") {
+            pushLog("warn", `[${product.product}] Pinterest board fallback used: ${boardMatch.board.name} (${boardMatch.board.id})`);
+          } else {
+            pushLog("ok", `[${product.product}] Pinterest board matched by ${boardMatch.reason}: ${boardMatch.board.name} (${boardMatch.board.id})`);
+          }
           const metricoolPayload = buildMetricoolPayload(
             mediaUrl,
             metricoolText,
             basePostPackage.metricool_schedule_datetime,
-            basePostPackage.metricool_status
+            basePostPackage.metricool_status,
+            boardMatch.board.id,
+            basePostPackage.name,
+            wpPermalink
           );
           await http.post(
             "/api/v1/metricool/scheduler/posts",
