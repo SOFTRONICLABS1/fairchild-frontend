@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 
 type Step = {
   href: string;
@@ -17,8 +18,31 @@ const FLOW_STEPS: Step[] = [
 ];
 
 export default function FlowStepper({ active }: { active: number }) {
+  const [resultsHref, setResultsHref] = useState("/results");
+
+  useEffect(() => {
+    try {
+      const lastResults = sessionStorage.getItem("pipeline:last-results-url");
+      if (lastResults) {
+        setResultsHref(lastResults);
+      }
+    } catch {
+      setResultsHref("/results");
+    }
+  }, []);
+
+  const steps = useMemo(
+    () =>
+      FLOW_STEPS.map((step) =>
+        step.href === "/results"
+          ? { ...step, href: resultsHref }
+          : step
+      ),
+    [resultsHref]
+  );
+
   const markResultsRestore = (href: string) => {
-    if (href === "/results" && active > 2) {
+    if (href.startsWith("/results") && active > 2) {
       sessionStorage.setItem("pipeline:allow-results-restore", "1");
     }
   };
@@ -26,7 +50,7 @@ export default function FlowStepper({ active }: { active: number }) {
   return (
     <div className="stepper-bar">
       <div className="stepper">
-        {FLOW_STEPS.map((step, index) => {
+        {steps.map((step, index) => {
           const stepNo = index + 1;
           const stateClass = stepNo < active ? "done" : stepNo === active ? "active" : "";
           const canNavigate = stepNo <= active;

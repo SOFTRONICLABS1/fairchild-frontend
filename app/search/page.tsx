@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
+import { getDisplayMessage } from "@/lib/api/errors";
 
 function PlatformCard({ active, code, title, subtitle, tone, onClick }: { active: boolean; code: string; title: string; subtitle: string; tone: "cj" | "imp"; onClick: () => void; }) {
   return (
@@ -28,6 +29,8 @@ export default function SearchPage() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiAlternates, setAiAlternates] = useState<string[]>([]);
+  const [keywordHelpOpen, setKeywordHelpOpen] = useState(false);
+  const [keywordError, setKeywordError] = useState<string | null>(null);
 
   const comingSoon = () => {
     window.alert("Coming soon");
@@ -35,10 +38,16 @@ export default function SearchPage() {
 
   const runSearch = () => {
     const trimmed = keyword.trim();
+    if (/^(https?:\/\/|www\.)/i.test(trimmed)) {
+      setKeywordError("Enter related keyword (2–3 words). URLs are not supported for keyword search.");
+      return;
+    }
+    setKeywordError(null);
+    const effectiveKeyword = trimmed || "all products";
     const useCj = cj || (!cj && !impact);
     const useImpact = impact || (!cj && !impact);
     const params = new URLSearchParams({
-      q: trimmed,
+      q: effectiveKeyword,
       cj: useCj ? "1" : "0",
       impact: useImpact ? "1" : "0"
     });
@@ -190,7 +199,7 @@ User request: ${promptInput}
       });
       router.push(`/results?${params.toString()}`);
     } catch (error) {
-      setAiError(error instanceof Error ? error.message : "AI search failed");
+      setAiError(getDisplayMessage(error) || "AI search failed");
       setAiAlternates([]);
     } finally {
       setAiLoading(false);
@@ -231,7 +240,23 @@ User request: ${promptInput}
               }}
             />
             <button type="button" onClick={runSearch} className="btn-primary">Search</button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setKeywordHelpOpen((prev) => !prev)}
+                className="grid h-7 w-7 place-items-center rounded-full border border-slate-300 text-xs text-slate-500"
+                aria-label="Keyword help"
+              >
+                ℹ
+              </button>
+              {keywordHelpOpen ? (
+                <div className="absolute right-0 top-9 z-20 w-64 rounded-lg border border-slate-200 bg-white p-2 text-left text-xs text-slate-600 shadow-lg">
+                  Enter a related keyword. Example: 'Nike shoes'. Product URLs are not supported for keyword search.
+                </div>
+              ) : null}
+            </div>
           </div>
+          {keywordError ? <p className="mb-3 text-sm text-red-600">{keywordError}</p> : null}
 
           <div className="mb-5 mt-6 flex items-center gap-3">
             <div className="h-px flex-1 bg-slate-200" />

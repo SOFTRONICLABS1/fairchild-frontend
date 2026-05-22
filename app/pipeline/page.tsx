@@ -1,8 +1,9 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
+import { getErrorMeta } from "@/lib/api/errors";
 
 type SelectedProduct = {
   id: string;
@@ -136,6 +137,93 @@ function tokenize(value: string): string[] {
     .filter((token) => token.length >= 2);
 }
 
+function normalizeTagToken(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function extractTagsFromText(text: string): string[] {
+  const matches = text.match(/#[A-Za-z0-9_]+/g) ?? [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  matches.forEach((raw) => {
+    const normalized = normalizeTagToken(raw);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    tags.push(`#${normalized}`);
+  });
+  return tags;
+}
+
+function tagSignature(tags: string[]): string {
+  return tags.map((tag) => normalizeTagToken(tag)).filter(Boolean).sort().join("|");
+}
+
+function tagOverlapScore(a: string[], b: string[]): number {
+  const aSet = new Set(a.map((tag) => normalizeTagToken(tag)).filter(Boolean));
+  const bSet = new Set(b.map((tag) => normalizeTagToken(tag)).filter(Boolean));
+  if (aSet.size === 0 || bSet.size === 0) return 0;
+  let intersection = 0;
+  aSet.forEach((token) => {
+    if (bSet.has(token)) intersection += 1;
+  });
+  const union = new Set([...aSet, ...bSet]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+function removeHashtagLines(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n")
+    .trim();
+}
+
+function splitWords(value: string): string[] {
+  return normalizeForMatch(value)
+    .split(" ")
+    .filter((token) => token.length >= 3);
+}
+
+function buildFallbackTags(
+  product: StoredPipelineProduct,
+  postPackage: PostPackage,
+  bannedSignatures: string[]
+): string[] {
+  const pool = [
+    ...splitWords(product.product).slice(0, 4),
+    ...splitWords(product.companyName ?? "").slice(0, 2),
+    ...splitWords(postPackage.short_description).slice(0, 2),
+    "affiliate",
+    "shopping",
+    product.platform.toLowerCase(),
+    "deals",
+    "sale"
+  ];
+
+  const uniquePool = Array.from(new Set(pool.map((item) => normalizeTagToken(item)).filter((item) => item.length >= 3)));
+  const tags: string[] = [];
+  uniquePool.forEach((token) => {
+    if (tags.length < 6) tags.push(`#${token}`);
+  });
+  if (tags.length < 4) {
+    ["shopnow", "trending", "musthave", "newarrival"].forEach((extra) => {
+      if (tags.length < 6 && !tags.includes(`#${extra}`)) tags.push(`#${extra}`);
+    });
+  }
+
+  let finalTags = tags.slice(0, Math.min(6, Math.max(4, tags.length)));
+  const fallbackAlternates = ["todaydeals", "smartbuy", "bestfinds", "onlineoffers", "discountfinds", "dailydeals"];
+  let alternateIndex = 0;
+  while (bannedSignatures.includes(tagSignature(finalTags)) && alternateIndex < fallbackAlternates.length) {
+    finalTags = [...finalTags.slice(1), `#${fallbackAlternates[alternateIndex]}`];
+    finalTags = Array.from(new Set(finalTags.map((tag) => `#${normalizeTagToken(tag)}`))).slice(0, 6);
+    alternateIndex += 1;
+  }
+  return finalTags.slice(0, 6);
+}
+
 function pickBestPinterestBoard(
   productTitle: string,
   companyName: string | undefined,
@@ -206,9 +294,11 @@ export default function PipelinePage() {
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [currentProductLabel, setCurrentProductLabel] = useState<string>("No active product");
   const [pipelineError, setPipelineError] = useState<string | null>(null);
+  const [pipelineRetryable, setPipelineRetryable] = useState(false);
   const [createdWpProducts, setCreatedWpProducts] = useState<Array<{ productId: string | number; mediaId: number; productName: string }>>([]);
   const [logLines, setLogLines] = useState<Array<{ tone: "info" | "ok" | "warn" | "err"; text: string }>>([]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const recentHashtagSetsRef = useRef<string[][]>([]);
   const [options, setOptions] = useState<Record<OptionKey, boolean>>({
     wordpress: true,
     metricool: true,
@@ -257,8 +347,7 @@ export default function PipelinePage() {
           setSelectedTemplateId(data[0].identifier);
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to fetch templates";
-        setTemplatesError(message);
+        setTemplatesError(getErrorMeta(error).message || "Failed to fetch templates");
       } finally {
         setLoadingTemplates(false);
       }
@@ -377,16 +466,40 @@ export default function PipelinePage() {
   });
 
   const generateMetricoolText = async (
-    product: SelectedProduct,
+    product: StoredPipelineProduct,
     postPackage: PostPackage,
     permalink: string
   ): Promise<string> => {
-    const fallbackTags = "#deals #shopping #affiliate #sale";
+    const bannedSignatures = recentHashtagSetsRef.current.map((set) => tagSignature(set));
+    const fallbackTagsArray = buildFallbackTags(product, postPackage, bannedSignatures);
+    const fallbackTags = fallbackTagsArray.join(" ");
+
+    const ensureCaptionShape = (rawText: string): string => {
+      const cleanedBody = removeHashtagLines(rawText).trim();
+      let withBuy = cleanedBody.includes(`Buy now: ${permalink}`)
+        ? cleanedBody
+        : `${cleanedBody}\nBuy now: ${permalink}`.trim();
+
+      let tags = extractTagsFromText(rawText);
+      if (tags.length < 4) {
+        fallbackTagsArray.forEach((tag) => {
+          if (tags.length < 6 && !tags.includes(tag)) tags.push(tag);
+        });
+      }
+      if (tags.length > 6) tags = tags.slice(0, 6);
+      if (tags.length < 4) tags = fallbackTagsArray.slice(0, 4);
+
+      const finalText = `${withBuy}\n${tags.join(" ")}`.trim();
+      recentHashtagSetsRef.current = [...recentHashtagSetsRef.current.slice(-9), tags];
+      return finalText;
+    };
+
     if (!options.gpt) {
-      return `${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`.trim();
+      return ensureCaptionShape(`${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`);
     }
 
-    const prompt = `
+    const requestTextFromAi = async (variation: "default" | "force_variation"): Promise<string | null> => {
+      const prompt = `
 You write social media caption text for affiliate product posts.
 Return ONLY strict JSON: {"text":"string"}
 
@@ -395,11 +508,17 @@ Rules:
 - Concise, engaging, no hashtags spam.
 - Mention key product benefit naturally.
 - Final line MUST be exactly: Buy now: ${permalink}
-- Add one more final line after Buy now with 3-5 relevant hashtags (must start with #).
+- Add exactly one hashtag line after Buy now.
+- Hashtag line MUST contain 4 to 6 hashtags.
+- Hashtags must be relevant and specific to product category/brand/use-case.
+- Avoid repeating generic fixed hashtag sets.
+- Do not reuse these previous hashtag sets from current run: ${JSON.stringify(bannedSignatures)}
+${variation === "force_variation" ? "- IMPORTANT: use a clearly different hashtag set than previous outputs." : ""}
 
 Context:
 {
   "product": ${JSON.stringify(product.product)},
+  "company": ${JSON.stringify(product.companyName ?? "")},
   "platform": ${JSON.stringify(product.platform)},
   "description": ${JSON.stringify(postPackage.description)},
   "short_description": ${JSON.stringify(postPackage.short_description)},
@@ -408,46 +527,59 @@ Context:
 }
 `.trim();
 
-    const response = await http.post("/api/v1/claude/generate", {
-      prompt,
-      modelCandidates: ["claude-sonnet-4-5"],
-      maxTokens: 300,
-      temperature: 0.7
-    });
+      const response = await http.post("/api/v1/claude/generate", {
+        prompt,
+        modelCandidates: ["claude-sonnet-4-5"],
+        maxTokens: 300,
+        temperature: 0.85
+      });
 
-    const data = unwrapEnvelope<unknown>(response.data);
-    const rawText =
-      typeof data === "string"
-        ? data
-        : JSON.stringify(
-            (data as Record<string, unknown>)?.text ??
-            (data as Record<string, unknown>)?.output ??
-            (data as Record<string, unknown>)?.content ??
-            (data as Record<string, unknown>)?.response ??
-            data
-          );
-    const first = rawText.indexOf("{");
-    const last = rawText.lastIndexOf("}");
-    if (first < 0 || last < 0 || last <= first) {
-      return `${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`.trim();
+      const data = unwrapEnvelope<unknown>(response.data);
+      const rawText =
+        typeof data === "string"
+          ? data
+          : JSON.stringify(
+              (data as Record<string, unknown>)?.text ??
+              (data as Record<string, unknown>)?.output ??
+              (data as Record<string, unknown>)?.content ??
+              (data as Record<string, unknown>)?.response ??
+              data
+            );
+      const first = rawText.indexOf("{");
+      const last = rawText.lastIndexOf("}");
+      if (first < 0 || last < 0 || last <= first) {
+        return null;
+      }
+
+      try {
+        const parsed = JSON.parse(rawText.slice(first, last + 1)) as { text?: string };
+        return parsed.text?.trim() ?? null;
+      } catch {
+        return null;
+      }
+    };
+
+    const firstCandidate = await requestTextFromAi("default");
+    if (!firstCandidate) {
+      return ensureCaptionShape(`${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`);
     }
 
-    try {
-      const parsed = JSON.parse(rawText.slice(first, last + 1)) as { text?: string };
-      const text = parsed.text?.trim();
-      if (!text) return `${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`.trim();
-      let normalized = text;
-      if (!normalized.includes(`Buy now: ${permalink}`)) {
-        normalized = `${normalized}\nBuy now: ${permalink}`.trim();
+    const firstTags = extractTagsFromText(firstCandidate);
+    const tooSimilar = recentHashtagSetsRef.current.some((previous) => tagOverlapScore(firstTags, previous) >= 0.8);
+    const weakTags = firstTags.length < 4 || firstTags.length > 6;
+
+    if (tooSimilar || weakTags) {
+      const secondCandidate = await requestTextFromAi("force_variation");
+      if (secondCandidate) {
+        const secondTags = extractTagsFromText(secondCandidate);
+        const stillTooSimilar = recentHashtagSetsRef.current.some((previous) => tagOverlapScore(secondTags, previous) >= 0.8);
+        if (!stillTooSimilar && secondTags.length >= 4 && secondTags.length <= 6) {
+          return ensureCaptionShape(secondCandidate);
+        }
       }
-      const hasTagLine = normalized.split("\n").some((line) => line.trim().startsWith("#"));
-      if (!hasTagLine) {
-        normalized = `${normalized}\n${fallbackTags}`.trim();
-      }
-      return normalized;
-    } catch {
-      return `${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`.trim();
     }
+
+    return ensureCaptionShape(firstCandidate);
   };
 
   const buildMetricoolPayload = (
@@ -544,11 +676,13 @@ Context:
     }
 
     setPipelineError(null);
+    setPipelineRetryable(false);
     setPipelineStarted(true);
     setPipelineRunning(true);
     setElapsedSeconds(0);
     setCreatedWpProducts([]);
     setLogLines([]);
+    recentHashtagSetsRef.current = [];
     pushLog("info", `Pipeline started for ${readyProducts.length} products`);
 
     let pinterestBoards: PinterestBoard[] = [];
@@ -560,7 +694,7 @@ Context:
       pinterestBoards = boardsData?.data ?? [];
       pushLog("ok", `Pinterest boards fetched: ${pinterestBoards.length}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to fetch Pinterest boards";
+      const message = getErrorMeta(error).message || "Failed to fetch Pinterest boards";
       pushLog("warn", `Pinterest boards fetch failed, continuing with no boards: ${message}`);
     }
 
@@ -643,15 +777,20 @@ Context:
         setCreatedWpProducts((prev) => [...prev, { productId: wpProductData.id ?? "N/A", mediaId: mediaUploadData.id, productName: product.product }]);
         pushLog("ok", `[${product.product}] completed`);
       } catch (error) {
+        const meta = getErrorMeta(error);
         setProductState(product.id, "failed");
         setProductStepStates((prev) => {
           const current = prev[product.id] ?? ["waiting", "waiting", "waiting", "waiting"];
           const next = current.map((step) => (step === "running" ? "failed" : step)) as StepState[];
           return { ...prev, [product.id]: next };
         });
-        const message = error instanceof Error ? error.message : "Pipeline failed";
+        const message = meta.message || "Pipeline failed";
         setPipelineError(message);
-        pushLog("err", `[${product.product}] failed: ${message}`);
+        setPipelineRetryable(meta.retryable);
+        pushLog(
+          "err",
+          `[${product.product}] failed${meta.step ? ` at ${meta.step}` : ""}${meta.code ? ` (${meta.code})` : ""}: ${message}`
+        );
         setPipelineRunning(false);
         return;
       }
@@ -849,6 +988,12 @@ Context:
                 Back to Home
               </a>
             </div>
+          ) : null}
+
+          {pipelineStarted && !pipelineRunning && pipelineError && pipelineRetryable ? (
+            <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => void runPipeline()}>
+              Retry failed run
+            </button>
           ) : null}
 
           {loadingTemplates ? <p className="mt-2 text-xs text-slate-500">Loading templates...</p> : null}

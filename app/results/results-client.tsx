@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
+import { getErrorMeta } from "@/lib/api/errors";
 
 const PAGE_SIZE = 50;
 const API_PAGE_LIMIT = 100;
@@ -80,6 +81,7 @@ type ValidationQueueItem = {
   url: string;
   epoch: number;
 };
+type FetchFailure = { message: string; retryable: boolean };
 
 function toNumber(value: string | number | null | undefined): number {
   if (value === null || value === undefined) return 0;
@@ -246,6 +248,8 @@ export default function ResultsClientPage() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorRetryable, setErrorRetryable] = useState(false);
+  const [lastFailedAction, setLastFailedAction] = useState<"initial" | "loadMore" | null>(null);
   const [cursor, setCursor] = useState<PlatformCursor>({
     cjOffset: 0,
     cjNextPage: null,
@@ -449,11 +453,12 @@ export default function ResultsClientPage() {
     const settled = await Promise.allSettled(tasks);
     const nextState: PlatformCursor = { ...state };
     const chunkRows: ResultRow[] = [];
-    const failures: string[] = [];
+    const failures: FetchFailure[] = [];
 
     settled.forEach((item) => {
       if (item.status === "rejected") {
-        failures.push(item.reason instanceof Error ? item.reason.message : "Unknown API error");
+        const meta = getErrorMeta(item.reason);
+        failures.push({ message: meta.message, retryable: meta.retryable });
         return;
       }
       const { platform, result } = item.value;
@@ -475,6 +480,8 @@ export default function ResultsClientPage() {
     const load = async () => {
       setLoading(true);
       setError(null);
+      setErrorRetryable(false);
+      setLastFailedAction(null);
       setPage(1);
       try {
         const shouldRestore = sessionStorage.getItem("pipeline:allow-results-restore") === "1";
@@ -513,7 +520,11 @@ export default function ResultsClientPage() {
         const initialSelection = shouldRestore ? buildSelectionState(deduped) : Object.fromEntries(deduped.map((row) => [row.id, false]));
         setSelectedIds(initialSelection);
         queueCjValidation(deduped);
-        if (failures.length) setError(failures.join(" | "));
+        if (failures.length) {
+          setError(failures.map((item) => item.message).join(" | "));
+          setErrorRetryable(failures.some((item) => item.retryable));
+          setLastFailedAction("initial");
+        }
         console.debug("[results] initial load completed", {
           keyword,
           useCj,
@@ -522,8 +533,10 @@ export default function ResultsClientPage() {
           failures
         });
       } catch (requestError) {
-        const msg = requestError instanceof Error ? requestError.message : "Failed to fetch results";
-        setError(msg);
+        const meta = getErrorMeta(requestError);
+        setError(meta.message || "Failed to fetch results");
+        setErrorRetryable(meta.retryable);
+        setLastFailedAction("initial");
         setRows([]);
         console.error("[results] initial load failed", requestError);
       } finally {
@@ -542,6 +555,8 @@ export default function ResultsClientPage() {
   const loadMore = async () => {
     setLoadingMore(true);
     setError(null);
+    setErrorRetryable(false);
+    setLastFailedAction(null);
     try {
       const { chunkRows, nextState, failures } = await fetchChunk(cursor);
       const merged = dedupeByTitle([...rows, ...chunkRows]);
@@ -555,19 +570,34 @@ export default function ResultsClientPage() {
         });
         return next;
       });
-      if (failures.length) setError(failures.join(" | "));
+      if (failures.length) {
+        setError(failures.map((item) => item.message).join(" | "));
+        setErrorRetryable(failures.some((item) => item.retryable));
+        setLastFailedAction("loadMore");
+      }
       console.debug("[results] load more completed", {
         addedRows: chunkRows.length,
         totalRows: merged.length,
         failures
       });
     } catch (requestError) {
-      const msg = requestError instanceof Error ? requestError.message : "Failed to load more";
-      setError(msg);
+      const meta = getErrorMeta(requestError);
+      setError(meta.message || "Failed to load more");
+      setErrorRetryable(meta.retryable);
+      setLastFailedAction("loadMore");
       console.error("[results] load more failed", requestError);
     } finally {
       setLoadingMore(false);
     }
+  };
+
+  const retryLastFailed = async () => {
+    if (!errorRetryable || !lastFailedAction) return;
+    if (lastFailedAction === "initial") {
+      router.refresh();
+      return;
+    }
+    await loadMore();
   };
 
   const selectedCount = useMemo(
@@ -616,6 +646,7 @@ export default function ResultsClientPage() {
       discount: row.discount
     }));
     sessionStorage.setItem("pipeline:selected-products", JSON.stringify(payload));
+    sessionStorage.setItem("pipeline:allow-results-restore", "1");
     router.push("/review");
   };
 
@@ -651,7 +682,16 @@ export default function ResultsClientPage() {
           {!loading && invalidNoticeCount > 0 ? (
             <p className="mb-2 text-xs text-amber-700">{invalidNoticeCount} invalid selected product(s) removed.</p>
           ) : null}
-          {error ? <p className="mb-2 text-sm text-red-600">{error}</p> : null}
+          {error ? (
+            <div className="mb-2 flex items-center gap-2">
+              <p className="text-sm text-red-600">{error}</p>
+              {errorRetryable ? (
+                <button type="button" className="btn-secondary" onClick={() => void retryLastFailed()}>
+                  Retry
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           {loading ? (
             <div className="grid min-h-[340px] place-items-center rounded-xl border border-slate-200 bg-white">

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
+import { getDisplayMessage } from "@/lib/api/errors";
 
 type SelectedProduct = {
   id: string;
@@ -379,7 +380,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
 
       applyGeneratedFields(index, generated);
     } catch (error) {
-      setAiError(error instanceof Error ? error.message : "Failed to regenerate field");
+      setAiError(getDisplayMessage(error) || "Failed to regenerate field");
     } finally {
       setFieldLoading(index, key, false);
     }
@@ -401,7 +402,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
       ]);
       applyGeneratedFields(index, generated);
     } catch (error) {
-      setAiError(error instanceof Error ? error.message : "Failed to regenerate fields");
+      setAiError(getDisplayMessage(error) || "Failed to regenerate fields");
     } finally {
       setRegeneratingAll(false);
     }
@@ -445,7 +446,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
         setAiReadyByProduct((prev) => ({ ...prev, ...nextReady }));
         sessionStorage.setItem("pipeline:post-packages", JSON.stringify(nextPackages));
       } catch (error) {
-        setAiError(error instanceof Error ? error.message : "Failed to generate package content");
+        setAiError(getDisplayMessage(error) || "Failed to generate package content");
       } finally {
         setInitialGeneratingIndex(null);
         setRegeneratingAll(false);
