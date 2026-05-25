@@ -202,6 +202,10 @@ async function fetchCjPage(
     pid: "101105481",
     limit
   };
+  const isFirstPage = offset === 0;
+  if (!isFirstPage && !nextPageToken) {
+    return { rows: [], nextOffset: offset, nextPageToken: null, hasMore: false };
+  }
   if (nextPageToken) {
     requestBody.page = nextPageToken;
   } else {
@@ -232,7 +236,7 @@ async function fetchCjPage(
   const total = toNumber(products?.totalCount);
   const nextOffset = offset + limit;
   const providerNextPage = products?.nextPage ?? null;
-  const hasMore = list.length > 0;
+  const hasMore = Boolean(providerNextPage);
   console.debug("[results] cj response", { rawCount: list.length, count: rows.length, nextOffset, total, hasMore, providerNextPage });
   return { rows, nextOffset, nextPageToken: providerNextPage, hasMore };
 }
@@ -437,11 +441,15 @@ export default function ResultsClientPage() {
   const fetchChunk = async (state: PlatformCursor) => {
     const tasks: Promise<{ platform: "CJ" | "Impact"; result: { rows: ResultRow[]; nextOffset: number; nextPageToken?: string | null; hasMore: boolean } }>[] = [];
     if (useCj && state.cjHasMore) {
+      if (state.cjOffset > 0 && !state.cjNextPage) {
+        state.cjHasMore = false;
+      } else {
       tasks.push((async () => {
         await throttleCj();
         const result = await fetchCjPage(keyword, state.cjOffset, state.cjNextPage);
         return { platform: "CJ" as const, result: { rows: result.rows, nextOffset: result.nextOffset, nextPageToken: result.nextPageToken, hasMore: result.hasMore } };
       })());
+      }
     }
     if (useImpact && state.impactHasMore) {
       tasks.push((async () => {
