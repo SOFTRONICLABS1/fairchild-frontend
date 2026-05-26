@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import TopNav from "@/components/flow/top-nav";
@@ -31,6 +31,120 @@ export default function SearchPage() {
   const [aiAlternates, setAiAlternates] = useState<string[]>([]);
   const [keywordHelpOpen, setKeywordHelpOpen] = useState(false);
   const [keywordError, setKeywordError] = useState<string | null>(null);
+  const [cjAdvertisers, setCjAdvertisers] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedCjAdvertiserId, setSelectedCjAdvertiserId] = useState("");
+  const [cjAdvertisersLoading, setCjAdvertisersLoading] = useState(false);
+  const [cjAdvertisersError, setCjAdvertisersError] = useState<string | null>(null);
+  const [impactCampaignOptions, setImpactCampaignOptions] = useState<Array<{ campaignName: string; catalogIds: string[] }>>([]);
+  const [selectedImpactCampaign, setSelectedImpactCampaign] = useState("");
+  const [impactCampaignLoading, setImpactCampaignLoading] = useState(false);
+  const [impactCampaignError, setImpactCampaignError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem("search:cj-advertiser-id");
+    if (saved !== null) setSelectedCjAdvertiserId(saved);
+    const savedImpactCampaign = sessionStorage.getItem("search:impact-campaign");
+    if (savedImpactCampaign !== null) setSelectedImpactCampaign(savedImpactCampaign);
+  }, []);
+
+  useEffect(() => {
+    sessionStorage.setItem("search:cj-advertiser-id", selectedCjAdvertiserId);
+  }, [selectedCjAdvertiserId]);
+
+  useEffect(() => {
+    sessionStorage.setItem("search:impact-campaign", selectedImpactCampaign);
+  }, [selectedImpactCampaign]);
+
+  useEffect(() => {
+    const loadAdvertisers = async () => {
+      if (!cj || cjAdvertisers.length > 0 || cjAdvertisersLoading) return;
+      setCjAdvertisersLoading(true);
+      setCjAdvertisersError(null);
+      try {
+        const response = await http.get("/api/v1/cj/advertisers/lookup", {
+          params: {
+            "requestor-cid": "6947255",
+            "advertiser-ids": "joined",
+            "response-format": "json"
+          }
+        });
+        const data = unwrapEnvelope<{
+          "cj-api"?: {
+            advertisers?: {
+              advertiser?: Array<{ "advertiser-id"?: string; "advertiser-name"?: string }> | { "advertiser-id"?: string; "advertiser-name"?: string };
+            };
+          };
+        }>(response.data);
+        const rawAdvertisers = data?.["cj-api"]?.advertisers?.advertiser;
+        const list = Array.isArray(rawAdvertisers) ? rawAdvertisers : rawAdvertisers ? [rawAdvertisers] : [];
+        const normalized = list
+          .map((item) => ({
+            id: String(item["advertiser-id"] ?? "").trim(),
+            name: String(item["advertiser-name"] ?? "").trim()
+          }))
+          .filter((item) => item.id && item.name);
+        setCjAdvertisers(normalized);
+      } catch (error) {
+        setCjAdvertisersError(getDisplayMessage(error) || "Failed to load CJ advertisers");
+      } finally {
+        setCjAdvertisersLoading(false);
+      }
+    };
+    void loadAdvertisers();
+  }, [cj, cjAdvertisers.length, cjAdvertisersLoading]);
+
+  useEffect(() => {
+    const loadImpactCampaigns = async () => {
+      if (!impact || impactCampaignOptions.length > 0 || impactCampaignLoading) return;
+      setImpactCampaignLoading(true);
+      setImpactCampaignError(null);
+      try {
+        const limit = 20;
+        let offset = 0;
+        const campaignMap = new Map<string, Set<string>>();
+        while (true) {
+          const response = await http.get("/api/v1/impact/catalogs", {
+            params: { limit, offset }
+          });
+          const data = unwrapEnvelope<{ Catalogs?: Array<{ Id?: string; CampaignName?: string }> }>(response.data);
+          const catalogs = Array.isArray(data.Catalogs) ? data.Catalogs : [];
+          catalogs.forEach((catalog) => {
+            const campaignName = String(catalog.CampaignName ?? "").trim();
+            const catalogId = String(catalog.Id ?? "").trim();
+            if (!campaignName || !catalogId) return;
+            if (!campaignMap.has(campaignName)) {
+              campaignMap.set(campaignName, new Set());
+            }
+            campaignMap.get(campaignName)?.add(catalogId);
+          });
+          if (catalogs.length < limit) break;
+          offset += limit;
+        }
+
+        const options = Array.from(campaignMap.entries())
+          .map(([campaignName, catalogIds]) => ({
+            campaignName,
+            catalogIds: Array.from(catalogIds)
+          }))
+          .sort((a, b) => a.campaignName.localeCompare(b.campaignName));
+        setImpactCampaignOptions(options);
+        sessionStorage.setItem(
+          "search:impact-campaign-map",
+          JSON.stringify(
+            options.reduce<Record<string, string[]>>((acc, item) => {
+              acc[item.campaignName] = item.catalogIds;
+              return acc;
+            }, {})
+          )
+        );
+      } catch (error) {
+        setImpactCampaignError(getDisplayMessage(error) || "Failed to load Impact campaigns");
+      } finally {
+        setImpactCampaignLoading(false);
+      }
+    };
+    void loadImpactCampaigns();
+  }, [impact, impactCampaignLoading, impactCampaignOptions.length]);
 
   const comingSoon = () => {
     window.alert("Coming soon");
@@ -51,6 +165,12 @@ export default function SearchPage() {
       cj: useCj ? "1" : "0",
       impact: useImpact ? "1" : "0"
     });
+    if (useCj && selectedCjAdvertiserId) {
+      params.set("cjAdvertiserId", selectedCjAdvertiserId);
+    }
+    if (useImpact && selectedImpactCampaign) {
+      params.set("impactCampaign", selectedImpactCampaign);
+    }
     router.push(`/results?${params.toString()}`);
   };
 
@@ -197,6 +317,12 @@ User request: ${promptInput}
         cj: useCj ? "1" : "0",
         impact: useImpact ? "1" : "0"
       });
+      if (useCj && selectedCjAdvertiserId) {
+        params.set("cjAdvertiserId", selectedCjAdvertiserId);
+      }
+      if (useImpact && selectedImpactCampaign) {
+        params.set("impactCampaign", selectedImpactCampaign);
+      }
       router.push(`/results?${params.toString()}`);
     } catch (error) {
       setAiError(getDisplayMessage(error) || "AI search failed");
@@ -227,6 +353,46 @@ User request: ${promptInput}
             <PlatformCard active={cj} code="CJ" title="CJ Affiliate" subtitle="Commission Junction" tone="cj" onClick={() => setCj((v) => !v)} />
             <PlatformCard active={impact} code="IM" title="Impact" subtitle="Impact.com partnerships" tone="imp" onClick={() => setImpact((v) => !v)} />
           </div>
+          {cj ? (
+            <div className="card mb-4 p-3 text-left">
+              <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-slate-500">CJ Advertiser</label>
+              <select
+                className="field w-full"
+                value={selectedCjAdvertiserId}
+                onChange={(event) => setSelectedCjAdvertiserId(event.target.value)}
+                disabled={cjAdvertisersLoading}
+              >
+                <option value="">All</option>
+                {cjAdvertisers.map((advertiser) => (
+                  <option key={advertiser.id} value={advertiser.id}>
+                    {advertiser.name}
+                  </option>
+                ))}
+              </select>
+              {cjAdvertisersLoading ? <p className="mt-2 text-xs text-slate-500">Loading advertisers...</p> : null}
+              {cjAdvertisersError ? <p className="mt-2 text-xs text-amber-700">{cjAdvertisersError}</p> : null}
+            </div>
+          ) : null}
+          {impact ? (
+            <div className="card mb-4 p-3 text-left">
+              <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-slate-500">Impact Advertiser</label>
+              <select
+                className="field w-full"
+                value={selectedImpactCampaign}
+                onChange={(event) => setSelectedImpactCampaign(event.target.value)}
+                disabled={impactCampaignLoading}
+              >
+                <option value="">All</option>
+                {impactCampaignOptions.map((campaign) => (
+                  <option key={campaign.campaignName} value={campaign.campaignName}>
+                    {campaign.campaignName}
+                  </option>
+                ))}
+              </select>
+              {impactCampaignLoading ? <p className="mt-2 text-xs text-slate-500">Loading campaigns...</p> : null}
+              {impactCampaignError ? <p className="mt-2 text-xs text-amber-700">{impactCampaignError}</p> : null}
+            </div>
+          ) : null}
 
           <div className="card mb-4 flex items-center gap-2 px-3 py-2">
             <span className="text-slate-400">⌕</span>
@@ -302,6 +468,12 @@ User request: ${promptInput}
                       cj: useCj ? "1" : "0",
                       impact: useImpact ? "1" : "0"
                     });
+                    if (useCj && selectedCjAdvertiserId) {
+                      params.set("cjAdvertiserId", selectedCjAdvertiserId);
+                    }
+                    if (useImpact && selectedImpactCampaign) {
+                      params.set("impactCampaign", selectedImpactCampaign);
+                    }
                     router.push(`/results?${params.toString()}`);
                   }}
                 >

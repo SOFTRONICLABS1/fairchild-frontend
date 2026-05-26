@@ -9,6 +9,7 @@ import { getErrorMeta } from "@/lib/api/errors";
 
 const PAGE_SIZE = 50;
 const API_PAGE_LIMIT = 100;
+const IMPACT_CATALOG_BY_KEYWORD_LIMIT = 50;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const ENABLE_RESULTS_CACHE = true;
 const ENABLE_CJ_LINK_VALIDATION = true;
@@ -57,6 +58,12 @@ type ImpactItem = {
 
 type ImpactPayload = {
   Items?: ImpactItem[];
+  "@nextpageuri"?: string;
+};
+
+type ImpactCatalog = {
+  Id?: string;
+  CampaignName?: string;
 };
 
 type PlatformCursor = {
@@ -132,7 +139,7 @@ function dedupeByTitle(rows: ResultRow[]): ResultRow[] {
 
   const impactUnique = new Map<string, ResultRow>();
   for (const row of impactRows) {
-    const key = `impact:${normalizeTitle(row.product)}`;
+    const key = `impact:${row.id}`;
     const existing = impactUnique.get(key);
     if (!existing || row.discount > existing.discount) {
       impactUnique.set(key, row);
@@ -186,10 +193,52 @@ async function fetchImpactPage(keyword: string, offset: number): Promise<{ rows:
   return { rows, nextOffset, hasMore };
 }
 
+async function fetchImpactCatalogByKeyword(
+  catalogId: string,
+  keyword: string,
+  nextPageId?: string | null
+): Promise<{ rows: ResultRow[]; hasMore: boolean; nextAfterId: string | null }> {
+  const params: Record<string, string | number> = { keyword, limit: IMPACT_CATALOG_BY_KEYWORD_LIMIT };
+  if (nextPageId) {
+    params.nextPageId = nextPageId;
+  }
+  const payload = await http.get(`/api/v1/impact/catalogs/${catalogId}/items/by-keyword`, {
+    params
+  });
+  const data = unwrapEnvelope<ImpactPayload>(payload.data);
+  const items = Array.isArray(data.Items) ? data.Items : [];
+  const rows = items.map((item) => {
+    const currentPrice = toNumber(item.CurrentPrice);
+    const originalPrice = toNumber(item.OriginalPrice) || currentPrice;
+    return {
+      rowKey: `impact-${item.Id}-${item.CatalogId ?? catalogId}`,
+      id: `impact-${item.Id}`,
+      product: item.Name,
+      companyName: item.CampaignName ?? "",
+      campaignId: item.CampaignId,
+      imageUrl: item.ImageUrl,
+      productUrl: item.Url ?? "",
+      platform: "Impact" as const,
+      price: currentPrice,
+      discount: calculateDiscount(originalPrice, currentPrice)
+    };
+  });
+  let nextAfterId: string | null = null;
+  const nextUri = data["@nextpageuri"] ?? "";
+  if (nextUri) {
+    const query = nextUri.includes("?") ? nextUri.split("?")[1] : "";
+    const search = new URLSearchParams(query);
+    nextAfterId = search.get("AfterId");
+  }
+  const hasMore = Boolean(nextAfterId);
+  return { rows, hasMore, nextAfterId };
+}
+
 async function fetchCjPage(
   keyword: string,
   offset: number,
-  nextPageToken: string | null
+  nextPageToken: string | null,
+  cjAdvertiserId: string
 ): Promise<{ rows: ResultRow[]; nextOffset: number; nextPageToken: string | null; hasMore: boolean }> {
   const limit = API_PAGE_LIMIT;
   const requestBody: Record<string, unknown> = {
@@ -198,7 +247,7 @@ async function fetchCjPage(
     advertiser_countries: ["US"],
     availability: "IN_STOCK",
     partner_status: "JOINED",
-    partner_ids: [""],
+    partner_ids: [cjAdvertiserId || ""],
     pid: "101105481",
     limit
   };
@@ -247,6 +296,8 @@ export default function ResultsClientPage() {
   const keyword = (searchParams.get("q") ?? "").trim();
   const useCj = searchParams.get("cj") !== "0";
   const useImpact = searchParams.get("impact") !== "0";
+  const cjAdvertiserId = (searchParams.get("cjAdvertiserId") ?? "").trim();
+  const impactCampaign = (searchParams.get("impactCampaign") ?? "").trim();
   const [rows, setRows] = useState<ResultRow[]>([]);
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
@@ -270,17 +321,69 @@ export default function ResultsClientPage() {
   const cjValidationQueueRef = useRef<ValidationQueueItem[]>([]);
   const cjValidationRunningRef = useRef(false);
   const searchEpochRef = useRef(0);
+  const impactCampaignMapRef = useRef<Record<string, string[]>>({});
+  const impactCatalogAfterIdRef = useRef<Record<string, string | null>>({});
 
   const cacheKey = useMemo(
-    () => `results-cache:v1:${keyword}:${useCj ? "1" : "0"}:${useImpact ? "1" : "0"}`,
-    [keyword, useCj, useImpact]
+    () =>
+      `results-cache:v1:${keyword}:${useCj ? "1" : "0"}:${useImpact ? "1" : "0"}:${cjAdvertiserId || "all"}:${impactCampaign || "all"}`,
+    [keyword, useCj, useImpact, cjAdvertiserId, impactCampaign]
   );
+
+  useEffect(() => {
+    try {
+      const rawMap = sessionStorage.getItem("search:impact-campaign-map");
+      if (rawMap) {
+        impactCampaignMapRef.current = JSON.parse(rawMap) as Record<string, string[]>;
+      }
+    } catch {
+      impactCampaignMapRef.current = {};
+    }
+  }, []);
 
   useEffect(() => {
     const params = searchParams.toString();
     const href = params ? `/results?${params}` : "/results";
     sessionStorage.setItem("pipeline:last-results-url", href);
   }, [searchParams]);
+
+  const fetchImpactCampaignCatalogMap = async (): Promise<Record<string, string[]>> => {
+    if (Object.keys(impactCampaignMapRef.current).length > 0) {
+      return impactCampaignMapRef.current;
+    }
+    const limit = 20;
+    let offset = 0;
+    const map = new Map<string, Set<string>>();
+    while (true) {
+      const response = await http.get("/api/v1/impact/catalogs", {
+        params: { limit, offset }
+      });
+      const data = unwrapEnvelope<{ Catalogs?: ImpactCatalog[] }>(response.data);
+      const catalogs = Array.isArray(data.Catalogs) ? data.Catalogs : [];
+      catalogs.forEach((catalog) => {
+        const campaignName = String(catalog.CampaignName ?? "").trim();
+        const catalogId = String(catalog.Id ?? "").trim();
+        if (!campaignName || !catalogId) return;
+        if (!map.has(campaignName)) {
+          map.set(campaignName, new Set());
+        }
+        map.get(campaignName)?.add(catalogId);
+      });
+      if (catalogs.length < limit) break;
+      offset += limit;
+    }
+    const objectMap = Array.from(map.entries()).reduce<Record<string, string[]>>((acc, [name, ids]) => {
+      acc[name] = Array.from(ids);
+      return acc;
+    }, {});
+    impactCampaignMapRef.current = objectMap;
+    try {
+      sessionStorage.setItem("search:impact-campaign-map", JSON.stringify(objectMap));
+    } catch {
+      // ignore cache write errors
+    }
+    return objectMap;
+  };
 
   useEffect(() => {
     try {
@@ -439,22 +542,63 @@ export default function ResultsClientPage() {
   };
 
   const fetchChunk = async (state: PlatformCursor) => {
-    const tasks: Promise<{ platform: "CJ" | "Impact"; result: { rows: ResultRow[]; nextOffset: number; nextPageToken?: string | null; hasMore: boolean } }>[] = [];
+    const tasks: Promise<{
+      platform: "CJ" | "Impact";
+      result: { rows: ResultRow[]; nextOffset: number; nextPageToken?: string | null; hasMore: boolean };
+      warnings?: string[];
+    }>[] = [];
     if (useCj && state.cjHasMore) {
       if (state.cjOffset > 0 && !state.cjNextPage) {
         state.cjHasMore = false;
       } else {
       tasks.push((async () => {
         await throttleCj();
-        const result = await fetchCjPage(keyword, state.cjOffset, state.cjNextPage);
+        const result = await fetchCjPage(keyword, state.cjOffset, state.cjNextPage, cjAdvertiserId);
         return { platform: "CJ" as const, result: { rows: result.rows, nextOffset: result.nextOffset, nextPageToken: result.nextPageToken, hasMore: result.hasMore } };
       })());
       }
     }
     if (useImpact && state.impactHasMore) {
       tasks.push((async () => {
-        const result = await fetchImpactPage(keyword, state.impactOffset);
-        return { platform: "Impact" as const, result: { rows: result.rows, nextOffset: result.nextOffset, hasMore: result.hasMore } };
+        if (!impactCampaign) {
+          const result = await fetchImpactPage(keyword, state.impactOffset);
+          return { platform: "Impact" as const, result: { rows: result.rows, nextOffset: result.nextOffset, hasMore: result.hasMore } };
+        }
+
+        const campaignMap = await fetchImpactCampaignCatalogMap();
+        const catalogIds = campaignMap[impactCampaign] ?? [];
+        if (catalogIds.length === 0) {
+          return { platform: "Impact" as const, result: { rows: [], nextOffset: state.impactOffset, hasMore: false } };
+        }
+
+        const settledCatalogs = await Promise.allSettled(
+          catalogIds.map((catalogId) =>
+            fetchImpactCatalogByKeyword(
+              catalogId,
+              keyword,
+              impactCatalogAfterIdRef.current[catalogId] ?? null
+            )
+          )
+        );
+        const combinedRows: ResultRow[] = [];
+        let anyHasMore = false;
+        const warnings: string[] = [];
+        settledCatalogs.forEach((catalogResult, index) => {
+          const catalogId = catalogIds[index];
+          if (catalogResult.status === "fulfilled") {
+            combinedRows.push(...catalogResult.value.rows);
+            impactCatalogAfterIdRef.current[catalogId] = catalogResult.value.nextAfterId;
+            if (catalogResult.value.hasMore) anyHasMore = true;
+          } else {
+            const meta = getErrorMeta(catalogResult.reason);
+            warnings.push(meta.message || "Impact catalog fetch failed");
+          }
+        });
+        return {
+          platform: "Impact" as const,
+          result: { rows: combinedRows, nextOffset: state.impactOffset + API_PAGE_LIMIT, hasMore: anyHasMore },
+          warnings
+        };
       })());
     }
 
@@ -471,6 +615,9 @@ export default function ResultsClientPage() {
       }
       const { platform, result } = item.value;
       chunkRows.push(...result.rows);
+      if (item.value.warnings?.length) {
+        item.value.warnings.forEach((warning) => failures.push({ message: warning, retryable: false }));
+      }
       if (platform === "CJ") {
         nextState.cjOffset = result.nextOffset;
         nextState.cjNextPage = result.nextPageToken ?? null;
@@ -496,6 +643,7 @@ export default function ResultsClientPage() {
         sessionStorage.removeItem("pipeline:allow-results-restore");
         searchEpochRef.current += 1;
         cjValidationQueueRef.current = [];
+        impactCatalogAfterIdRef.current = {};
         setCjValidationState({});
         setInvalidNoticeCount(0);
 
@@ -552,7 +700,7 @@ export default function ResultsClientPage() {
       }
     };
     void load();
-  }, [cacheKey, keyword, useCj, useImpact]);
+  }, [cacheKey, keyword, useCj, useImpact, cjAdvertiserId, impactCampaign]);
 
   useEffect(() => {
     if (!keyword || !ENABLE_RESULTS_CACHE) return;
