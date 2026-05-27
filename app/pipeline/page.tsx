@@ -121,6 +121,7 @@ const PIPELINE_STEPS = [
   "Create WordPress post",
   "Schedule to Metricool"
 ];
+const METRICOOL_TEXT_LIMIT = 500;
 
 function normalizeForMatch(value: string): string {
   return value
@@ -498,7 +499,10 @@ export default function PipelinePage() {
       return ensureCaptionShape(`${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`);
     }
 
-    const requestTextFromAi = async (variation: "default" | "force_variation"): Promise<string | null> => {
+    const requestTextFromAi = async (
+      variation: "default" | "force_variation",
+      enforceShort: boolean
+    ): Promise<string | null> => {
       const prompt = `
 You write social media caption text for affiliate product posts.
 Return ONLY strict JSON: {"text":"string"}
@@ -507,6 +511,7 @@ Rules:
 - 2 to 4 lines max.
 - Concise, engaging, no hashtags spam.
 - Mention key product benefit naturally.
+- Total character count MUST be <= ${METRICOOL_TEXT_LIMIT} characters.
 - Final line MUST be exactly: Buy now: ${permalink}
 - Add exactly one hashtag line after Buy now.
 - Hashtag line MUST contain 4 to 6 hashtags.
@@ -514,6 +519,7 @@ Rules:
 - Avoid repeating generic fixed hashtag sets.
 - Do not reuse these previous hashtag sets from current run: ${JSON.stringify(bannedSignatures)}
 ${variation === "force_variation" ? "- IMPORTANT: use a clearly different hashtag set than previous outputs." : ""}
+${enforceShort ? `- IMPORTANT: previous output exceeded ${METRICOOL_TEXT_LIMIT} chars. Keep this one significantly shorter and still meaningful.` : ""}
 
 Context:
 {
@@ -559,7 +565,7 @@ Context:
       }
     };
 
-    const firstCandidate = await requestTextFromAi("default");
+    const firstCandidate = await requestTextFromAi("default", false);
     if (!firstCandidate) {
       return ensureCaptionShape(`${postPackage.description}\n\nBuy now: ${permalink}\n${fallbackTags}`);
     }
@@ -568,18 +574,24 @@ Context:
     const tooSimilar = recentHashtagSetsRef.current.some((previous) => tagOverlapScore(firstTags, previous) >= 0.8);
     const weakTags = firstTags.length < 4 || firstTags.length > 6;
 
-    if (tooSimilar || weakTags) {
-      const secondCandidate = await requestTextFromAi("force_variation");
+    const tooLong = ensureCaptionShape(firstCandidate).length > METRICOOL_TEXT_LIMIT;
+    if (tooSimilar || weakTags || tooLong) {
+      const secondCandidate = await requestTextFromAi("force_variation", tooLong);
       if (secondCandidate) {
         const secondTags = extractTagsFromText(secondCandidate);
         const stillTooSimilar = recentHashtagSetsRef.current.some((previous) => tagOverlapScore(secondTags, previous) >= 0.8);
-        if (!stillTooSimilar && secondTags.length >= 4 && secondTags.length <= 6) {
-          return ensureCaptionShape(secondCandidate);
+        const secondNormalized = ensureCaptionShape(secondCandidate);
+        const secondTooLong = secondNormalized.length > METRICOOL_TEXT_LIMIT;
+        if (!stillTooSimilar && secondTags.length >= 4 && secondTags.length <= 6 && !secondTooLong) {
+          return secondNormalized;
         }
       }
     }
-
-    return ensureCaptionShape(firstCandidate);
+    const firstNormalized = ensureCaptionShape(firstCandidate);
+    if (firstNormalized.length > METRICOOL_TEXT_LIMIT) {
+      return ensureCaptionShape(`${postPackage.short_description}\nBuy now: ${permalink}\n${fallbackTags}`);
+    }
+    return firstNormalized;
   };
 
   const buildMetricoolPayload = (
