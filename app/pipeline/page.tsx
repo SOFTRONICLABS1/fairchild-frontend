@@ -187,6 +187,45 @@ function splitWords(value: string): string[] {
     .filter((token) => token.length >= 3);
 }
 
+function enforceMetricoolTextLimit(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const buyNowLine = lines.find((line) => line.toLowerCase().startsWith("buy now:")) ?? "";
+  const hashtagLine = lines.find((line) => line.startsWith("#")) ?? "";
+  const body = lines
+    .filter((line) => line !== buyNowLine && line !== hashtagLine)
+    .join(" ")
+    .trim();
+
+  const trailingLines = [buyNowLine, hashtagLine].filter(Boolean).join("\n");
+  const reservedLength = trailingLines.length > 0 ? trailingLines.length + 1 : 0;
+  const bodyLimit = Math.max(0, maxLength - reservedLength);
+
+  const trimAtSentenceBoundary = (value: string, limit: number): string => {
+    if (value.length <= limit) return value.trim();
+    const slice = value.slice(0, limit);
+    const punctuationIndexes = [
+      slice.lastIndexOf(". "),
+      slice.lastIndexOf("! "),
+      slice.lastIndexOf("? "),
+      slice.lastIndexOf("."),
+      slice.lastIndexOf("!"),
+      slice.lastIndexOf("?")
+    ];
+    const bestIndex = Math.max(...punctuationIndexes);
+    if (bestIndex >= Math.floor(limit * 0.55)) {
+      return slice.slice(0, bestIndex + 1).trim();
+    }
+    return slice.trim();
+  };
+
+  const trimmedBody = trimAtSentenceBoundary(body, bodyLimit);
+  const rebuilt = [trimmedBody, trailingLines].filter(Boolean).join("\n").trim();
+  if (rebuilt.length <= maxLength) return rebuilt;
+  return rebuilt.slice(0, maxLength).trim();
+}
+
 function buildFallbackTags(
   product: StoredPipelineProduct,
   postPackage: PostPackage,
@@ -606,8 +645,9 @@ Context:
     const fallback = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
     const dateTime = (scheduleDateTime || fallback).replace(" ", "T").slice(0, 19);
     const draft = metricoolStatus === "draft";
+    const boundedText = enforceMetricoolTextLimit(text, METRICOOL_TEXT_LIMIT);
     return {
-      text,
+      text: boundedText,
       autoPublish: true,
       draft,
       publicationDate: {
