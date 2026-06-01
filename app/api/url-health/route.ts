@@ -19,7 +19,33 @@ export async function GET(request: NextRequest) {
       },
       cache: "no-store"
     });
-    return NextResponse.json({ ok: response.status === 200, status: response.status });
+    if (response.status !== 200) {
+      return NextResponse.json({ ok: false, status: response.status, finalUrl: response.url });
+    }
+
+    const finalUrl = response.url?.toLowerCase() ?? "";
+    if (finalUrl.includes("/404") || finalUrl.includes("not-found")) {
+      return NextResponse.json({ ok: false, status: response.status, finalUrl: response.url, reason: "redirected-not-found" });
+    }
+
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (contentType.includes("text/html")) {
+      const html = (await response.text()).slice(0, 5000).toLowerCase();
+      const soft404Patterns = [
+        "page not found",
+        "404",
+        "not found",
+        "sorry, this page",
+        "doesn't exist",
+        "does not exist"
+      ];
+      const isSoft404 = soft404Patterns.some((pattern) => html.includes(pattern));
+      if (isSoft404) {
+        return NextResponse.json({ ok: false, status: response.status, finalUrl: response.url, reason: "soft-404" });
+      }
+    }
+
+    return NextResponse.json({ ok: true, status: response.status, finalUrl: response.url });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json({ ok: false, error: message }, { status: 200 });

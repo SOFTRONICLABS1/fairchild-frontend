@@ -15,6 +15,14 @@ const ENABLE_RESULTS_CACHE = true;
 const ENABLE_CJ_LINK_VALIDATION = true;
 const CJ_VALIDATION_BATCH_SIZE = 8;
 const CJ_URL_HEALTH_CACHE_KEY = "results:cj-url-health:v1";
+const BARSE_CAMPAIGN_NAME = "barse jewelry";
+const IMPACT_BARSE_VALIDATION_BATCH_SIZE = 8;
+const impactHealthCache = new Map<string, boolean>();
+type ImpactValidationQueueItem = {
+  rowId: string;
+  imageUrl: string;
+  epoch: number;
+};
 
 type ResultRow = {
   rowKey: string;
@@ -83,6 +91,7 @@ type CachedSearchState = {
 };
 
 type CjValidationState = "pending" | "valid" | "invalid";
+type ImpactValidationState = "pending" | "valid" | "invalid";
 type ValidationQueueItem = {
   rowId: string;
   url: string;
@@ -107,6 +116,26 @@ function toCurrency(amount: number): string {
 
 function normalizeTitle(title: string): string {
   return title.trim().toLowerCase();
+}
+
+function isBarseImpactRow(row: ResultRow): boolean {
+  return row.platform === "Impact" && row.companyName.trim().toLowerCase().includes("barse");
+}
+
+async function checkUrlHealth(url: string): Promise<boolean> {
+  if (!url) return false;
+  const cached = impactHealthCache.get(url);
+  if (cached !== undefined) return cached;
+  try {
+    const response = await fetch(`/api/url-health?url=${encodeURIComponent(url)}`);
+    const payload = (await response.json()) as { ok?: boolean };
+    const healthy = payload.ok === true;
+    impactHealthCache.set(url, healthy);
+    return healthy;
+  } catch {
+    impactHealthCache.set(url, false);
+    return false;
+  }
 }
 
 function shouldValidateCjUrl(row: ResultRow): boolean {
@@ -315,11 +344,14 @@ export default function ResultsClientPage() {
   const [page, setPage] = useState(1);
   const [preview, setPreview] = useState<{ url: string; title: string } | null>(null);
   const [cjValidationState, setCjValidationState] = useState<Record<string, CjValidationState>>({});
+  const [impactValidationState, setImpactValidationState] = useState<Record<string, ImpactValidationState>>({});
   const [invalidNoticeCount, setInvalidNoticeCount] = useState(0);
   const cjLastCallAtRef = useRef(0);
   const cjLinkHealthCacheRef = useRef<Map<string, boolean>>(new Map());
   const cjValidationQueueRef = useRef<ValidationQueueItem[]>([]);
   const cjValidationRunningRef = useRef(false);
+  const impactValidationQueueRef = useRef<ImpactValidationQueueItem[]>([]);
+  const impactValidationRunningRef = useRef(false);
   const searchEpochRef = useRef(0);
   const impactCampaignMapRef = useRef<Record<string, string[]>>({});
   const impactCatalogAfterIdRef = useRef<Record<string, string | null>>({});
@@ -422,6 +454,95 @@ export default function ResultsClientPage() {
     });
     if (removedSelected > 0) {
       setInvalidNoticeCount((prev) => prev + removedSelected);
+    }
+  };
+
+  const processImpactValidationQueue = async () => {
+    if (impactValidationRunningRef.current) return;
+    impactValidationRunningRef.current = true;
+    try {
+      while (impactValidationQueueRef.current.length > 0) {
+        const currentEpoch = searchEpochRef.current;
+        const batch = impactValidationQueueRef.current
+          .splice(0, IMPACT_BARSE_VALIDATION_BATCH_SIZE)
+          .filter((item) => item.epoch === currentEpoch);
+        if (batch.length === 0) continue;
+        const checks = await Promise.all(
+          batch.map(async (item) => {
+            const imageOk = await checkUrlHealth(item.imageUrl);
+            return { rowId: item.rowId, healthy: imageOk };
+          })
+        );
+        setImpactValidationState((prev) => {
+          const next = { ...prev };
+          checks.forEach((item) => {
+            next[item.rowId] = item.healthy ? "valid" : "invalid";
+          });
+          return next;
+        });
+        const invalidIds = checks.filter((item) => !item.healthy).map((item) => item.rowId);
+        removeInvalidRows(invalidIds);
+      }
+    } finally {
+      impactValidationRunningRef.current = false;
+    }
+  };
+
+  const queueImpactBarseValidation = (candidateRows: ResultRow[]) => {
+    const currentEpoch = searchEpochRef.current;
+    const queuedIds = new Set(impactValidationQueueRef.current.map((item) => item.rowId));
+    const toQueue: ImpactValidationQueueItem[] = [];
+    const pendingIds: string[] = [];
+    const invalidIds: string[] = [];
+    candidateRows
+      .filter((row) => {
+        if (!isBarseImpactRow(row)) return false;
+        if (!row.imageUrl || !row.productUrl) return true;
+        return true;
+      })
+      .forEach((row) => {
+        if (!row.imageUrl || !row.productUrl) {
+          invalidIds.push(row.id);
+          return;
+        }
+        const imageCached = impactHealthCache.get(row.imageUrl);
+        if (imageCached !== undefined) {
+          if (imageCached) {
+            // fully validated, no queue needed
+            setImpactValidationState((prev) => ({ ...prev, [row.id]: "valid" }));
+          } else {
+            invalidIds.push(row.id);
+          }
+          return;
+        }
+        if (queuedIds.has(row.id)) return;
+        pendingIds.push(row.id);
+        toQueue.push({
+          rowId: row.id,
+          imageUrl: row.imageUrl,
+          epoch: currentEpoch
+        });
+      });
+    if (pendingIds.length > 0 || invalidIds.length > 0) {
+      const pendingSet = new Set(pendingIds);
+      const invalidSet = new Set(invalidIds);
+      setImpactValidationState((prev) => {
+        const next = { ...prev };
+        pendingSet.forEach((id) => {
+          next[id] = "pending";
+        });
+        invalidSet.forEach((id) => {
+          next[id] = "invalid";
+        });
+        return next;
+      });
+    }
+    if (invalidIds.length > 0) {
+      removeInvalidRows(invalidIds);
+    }
+    if (toQueue.length > 0) {
+      impactValidationQueueRef.current.push(...toQueue);
+      void processImpactValidationQueue();
     }
   };
 
@@ -643,8 +764,10 @@ export default function ResultsClientPage() {
         sessionStorage.removeItem("pipeline:allow-results-restore");
         searchEpochRef.current += 1;
         cjValidationQueueRef.current = [];
+        impactValidationQueueRef.current = [];
         impactCatalogAfterIdRef.current = {};
         setCjValidationState({});
+        setImpactValidationState({});
         setInvalidNoticeCount(0);
 
         if (ENABLE_RESULTS_CACHE) {
@@ -657,6 +780,7 @@ export default function ResultsClientPage() {
               setSelectedIds(cached.selectedIds ?? buildSelectionState(cached.rows));
               setPage(cached.page ?? 1);
               queueCjValidation(cached.rows);
+              queueImpactBarseValidation(cached.rows);
               return;
             }
           }
@@ -676,6 +800,7 @@ export default function ResultsClientPage() {
         const initialSelection = shouldRestore ? buildSelectionState(deduped) : Object.fromEntries(deduped.map((row) => [row.id, false]));
         setSelectedIds(initialSelection);
         queueCjValidation(deduped);
+        queueImpactBarseValidation(deduped);
         if (failures.length) {
           setError(failures.map((item) => item.message).join(" | "));
           setErrorRetryable(failures.some((item) => item.retryable));
@@ -719,6 +844,7 @@ export default function ResultsClientPage() {
       setRows(merged);
       setCursor(nextState);
       queueCjValidation(merged);
+      queueImpactBarseValidation(merged);
       setSelectedIds((prev) => {
         const next = { ...prev };
         merged.forEach((row) => {
@@ -764,11 +890,16 @@ export default function ResultsClientPage() {
     () =>
       rows.filter((row) => {
         if (!ENABLE_CJ_LINK_VALIDATION) return true;
-        if (row.platform !== "CJ") return true;
-        if (!shouldValidateCjUrl(row)) return true;
-        return cjValidationState[row.id] === "valid";
+        if (row.platform === "CJ") {
+          if (!shouldValidateCjUrl(row)) return true;
+          return cjValidationState[row.id] === "valid";
+        }
+        if (isBarseImpactRow(row)) {
+          return impactValidationState[row.id] === "valid";
+        }
+        return true;
       }),
-    [cjValidationState, rows]
+    [cjValidationState, impactValidationState, rows]
   );
   const visibleRows = useMemo(
     () => filteredRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
