@@ -7,7 +7,7 @@ Flow-first frontend based on `reference/posto_page1..5`.
 2. `/results` - filters + results table + select products
 3. `/pipeline` - pipeline options + live step status
 4. `/history` - post history and status log
-5. `/settings` - platform credentials and configuration
+5. `/settings` - platform credentials and configurations
 
 ## Notes
 - This phase focuses only on the product flow and designs structure.
