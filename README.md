@@ -10,7 +10,7 @@ Flow-first frontend based on `reference/posto_page1..5`.
 5. `/settings` - platform credentials and configuration
 
 ## Notes
-- This phase focuses only on the product flow and design structure.
+- This phase focuses only on the product flow and designs structure.
 - API endpoint integration is intentionally deferred.
 - `reference/` is temporary design input and can be deleted laters.
 
