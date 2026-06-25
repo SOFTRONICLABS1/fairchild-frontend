@@ -351,7 +351,7 @@ User request: ${promptInput}
 
           <div className="mb-5 grid grid-cols-2 gap-3">
             <PlatformCard active={cj} code="CJ" title="CJ Affiliate" subtitle="Commission Junction" tone="cj" onClick={() => setCj((v) => !v)} />
-            <PlatformCard active={impact} code="IM" title="Impact" subtitle="Impact.com partnerships" tone="imp" onClick={() => setImpact((v) => !v)} />
+            <PlatformCard active={impact} code="IM" title="Impact" subtitle="Impact.com partnership" tone="imp" onClick={() => setImpact((v) => !v)} />
           </div>
           {cj ? (
             <div className="card mb-4 p-3 text-left">
