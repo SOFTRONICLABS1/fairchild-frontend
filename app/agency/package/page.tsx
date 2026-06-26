@@ -430,14 +430,14 @@ export default function AgencyPackagePage() {
 
             if (extraCount > 0) {
               let generated = await generateAgencyFieldsWithAI(pkg, [field], "default");
-              const generatedValues = trimGeneratedList(field === "keywords" ? generated.keywords : generated.headlines, extraCount);
+              const generatedValues = trimGeneratedList(generated.headlines, extraCount);
               const sameValue = JSON.stringify(generatedValues) === JSON.stringify(existingValues.slice(promptValues.length, promptValues.length + extraCount));
 
               if (sameValue) {
                 generated = await generateAgencyFieldsWithAI(pkg, [field], "force_variation");
               }
 
-              regeneratedExtras = trimGeneratedList(field === "keywords" ? generated.keywords : generated.headlines, extraCount);
+              regeneratedExtras = trimGeneratedList(generated.headlines, extraCount);
             }
 
             setAssessmentField(pkg.rowId, field, promptValues, regeneratedExtras);
