@@ -2,18 +2,27 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import AgencyLogoutButton from "@/components/agency/logout-button";
 import TopNav from "@/components/flow/top-nav";
 import AgencyStepper from "@/components/agency/stepper";
+import { loadAgencyAuth } from "@/lib/agency/auth";
 import { AgencyPackage, AGENCY_TEMPLATES, loadAgencyPackages, packageCompleteness } from "@/lib/agency/mock";
 
 export default function AgencyPublishPage() {
+  const router = useRouter();
   const [packages, setPackages] = useState<AgencyPackage[]>([]);
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
 
   useEffect(() => {
+    const auth = loadAgencyAuth();
+    if (!auth?.accessToken) {
+      router.replace("/agency/login");
+      return;
+    }
     setPackages(loadAgencyPackages());
-  }, []);
+  }, [router]);
 
   const totals = useMemo(() => {
     return {
@@ -32,7 +41,7 @@ export default function AgencyPublishPage() {
 
   return (
     <>
-      <TopNav />
+      <TopNav right={<AgencyLogoutButton />} />
       <AgencyStepper active={3} />
       <div className="page-wrap">
         <div className="mx-auto max-w-6xl">
@@ -92,6 +101,13 @@ export default function AgencyPublishPage() {
                           <div key={headline} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">{headline}</div>
                         ))}
                       </div>
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {pkg.targetingLocations.map((location) => (
+                          <span key={`${pkg.rowId}-${location}`} className="rounded-full bg-[#F3F8FE] px-3 py-1 text-xs text-[#185FA5]">
+                            {location}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                     <div className="agency-publish-meta">
                       <p className="text-xs uppercase tracking-wide text-slate-500">Template</p>
@@ -108,7 +124,7 @@ export default function AgencyPublishPage() {
           </div>
 
           <div className="mt-5 flex justify-end gap-2">
-            <Link href="/agency/package" className="btn-secondary">Back to Package</Link>
+            <Link href="/agency/package" className="btn-secondary">Back to Campaign Package</Link>
             <button type="button" className="btn-primary" onClick={() => void runPublish()} disabled={publishing || packages.length === 0}>
               {publishing ? "Publishing..." : published ? "Published" : "Publish"}
             </button>

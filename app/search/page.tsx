@@ -18,7 +18,7 @@ export default function SearchPage() {
           </div>
 
           <div className="grid gap-5 md:grid-cols-2">
-            <Link href="/agency/upload" className="agency-entry-card">
+            <Link href="/agency/login" className="agency-entry-card">
               <div className="agency-entry-top">
                 <span className="agency-entry-badge agency-entry-badge-brand">AB</span>
                 <div className="agency-steps">

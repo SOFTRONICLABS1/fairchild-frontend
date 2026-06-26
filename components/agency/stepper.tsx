@@ -4,7 +4,7 @@ import Link from "next/link";
 
 const STEPS = [
   { href: "/agency/upload", label: "Upload" },
-  { href: "/agency/package", label: "Package" },
+  { href: "/agency/package", label: "Campaign Package" },
   { href: "/agency/publish", label: "Publish" }
 ];
 

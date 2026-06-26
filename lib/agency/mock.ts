@@ -5,6 +5,8 @@ export const AGENCY_SESSION_PACKAGES_KEY = "agency:packages";
 
 export type AgencyRow = {
   id: string;
+  brandId?: string;
+  locationId?: string;
   location: string;
   landingPageUrl: string;
   imageDataUrl: string;
@@ -22,6 +24,8 @@ export type AgencyTemplate = {
 
 export type AgencyPackage = {
   rowId: string;
+  brandId?: string;
+  locationId?: string;
   location: string;
   landingPageUrl: string;
   imageDataUrl: string;
@@ -32,6 +36,7 @@ export type AgencyPackage = {
   descriptions: string[];
   displayPath: string;
   cta: string;
+  targetingLocations: string[];
   status: "Draft" | "Needs review" | "Ready";
   selectedTemplateId: string;
   warnings: string[];
@@ -91,6 +96,7 @@ export function rowIsValid(row: AgencyRow): boolean {
 export function createEmptyAgencyRow(): AgencyRow {
   return {
     id: `agency-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    brandId: undefined,
     location: "",
     landingPageUrl: "",
     imageDataUrl: "",
@@ -144,6 +150,8 @@ export function mockAgencyPackage(row: AgencyRow): AgencyPackage {
 
   return {
     rowId: row.id,
+    brandId: row.brandId,
+    locationId: row.locationId,
     location: row.location,
     landingPageUrl: row.landingPageUrl,
     imageDataUrl: row.imageDataUrl,
@@ -154,6 +162,7 @@ export function mockAgencyPackage(row: AgencyRow): AgencyPackage {
     descriptions,
     displayPath: pathBase || "local/offer",
     cta: "Book now",
+    targetingLocations: [],
     status: "Ready",
     selectedTemplateId: AGENCY_TEMPLATES[0].id,
     warnings: deriveWarnings(row)
@@ -182,12 +191,15 @@ export function deriveWarnings(row: AgencyRow): string[] {
 export function packageCompleteness(pkg: AgencyPackage): number {
   let score = 0;
   if (pkg.location.trim()) score += 1;
+  if (pkg.campaignName.trim()) score += 1;
   if (pkg.landingPageUrl.trim()) score += 1;
-  if (pkg.keywords.filter(Boolean).length >= 3) score += 1;
+  if (pkg.cta.trim()) score += 1;
+  if (pkg.targetingLocations.length > 0) score += 1;
+  if (pkg.keywords.filter(Boolean).length > 0) score += 1;
   if (pkg.headlines.filter(Boolean).length >= 5) score += 1;
   if (pkg.descriptions.filter(Boolean).length >= 4) score += 1;
   if (pkg.selectedTemplateId) score += 1;
-  return Math.round((score / 6) * 100);
+  return Math.round((score / 8) * 100);
 }
 
 export function loadAgencyRows(): AgencyRow[] {
@@ -209,7 +221,12 @@ export function loadAgencyPackages(): AgencyPackage[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = sessionStorage.getItem(AGENCY_SESSION_PACKAGES_KEY);
-    return raw ? (JSON.parse(raw) as AgencyPackage[]) : [];
+    return raw
+      ? (JSON.parse(raw) as AgencyPackage[]).map((pkg) => ({
+          ...pkg,
+          targetingLocations: Array.isArray(pkg.targetingLocations) ? pkg.targetingLocations : []
+        }))
+      : [];
   } catch {
     return [];
   }
