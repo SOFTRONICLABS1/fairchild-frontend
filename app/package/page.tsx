@@ -25,6 +25,7 @@ type PostPackage = {
   name: string;
   type: "external";
   status: "draft" | "pending" | "private" | "publish";
+  wordpress_category: WordPressCategoryOption | null;
   metricool_schedule_datetime: string;
   metricool_status: "draft" | "publish";
   featured: boolean;
@@ -48,7 +49,17 @@ type AIPackageFields = {
   metricool_schedule_datetime?: string;
 };
 
+type WordPressCategoryOption = {
+  id: number;
+  name: string;
+};
+
 const AI_MODELS = ["claude-sonnet-4-5"];
+const WORDPRESS_CATEGORY_PAGE_SIZE = 100;
+const WORDPRESS_CATEGORY_FETCH_CONCURRENCY = 5;
+
+let wordpressCategoryCache: WordPressCategoryOption[] | null = null;
+let wordpressCategoryPromise: Promise<WordPressCategoryOption[]> | null = null;
 
 function formatLocalDate(date: Date): string {
   const year = date.getFullYear();
@@ -143,6 +154,189 @@ function urlHint(url: string): string {
   }
 }
 
+function normalizeWordPressCategories(input: unknown): WordPressCategoryOption[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const category = item as { id?: unknown; name?: unknown };
+      const id = Number(category.id);
+      const name = typeof category.name === "string" ? category.name.trim() : "";
+      if (!Number.isFinite(id) || !name) return null;
+      return { id, name };
+    })
+    .filter((item): item is WordPressCategoryOption => Boolean(item));
+}
+
+function extractTotalPagesFromHeaders(headers: Record<string, unknown> | undefined): number | null {
+  if (!headers) return null;
+  const raw = headers["x-wp-totalpages"] ?? headers["x-total-pages"] ?? headers["x-totalpages"];
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function fetchWordPressCategoryPage(page: number): Promise<{
+  categories: WordPressCategoryOption[];
+  totalPages: number | null;
+}> {
+  const response = await http.get("/api/v1/wordpress/products/categories", {
+    params: {
+      per_page: WORDPRESS_CATEGORY_PAGE_SIZE,
+      page
+    }
+  });
+  const categories = normalizeWordPressCategories(unwrapEnvelope<unknown>(response.data));
+  const totalPages = extractTotalPagesFromHeaders(response.headers as Record<string, unknown> | undefined);
+  return { categories, totalPages };
+}
+
+async function fetchWordPressCategoriesWithBoundedParallel(totalPages: number): Promise<WordPressCategoryOption[]> {
+  const categories: WordPressCategoryOption[] = [];
+  for (let start = 2; start <= totalPages; start += WORDPRESS_CATEGORY_FETCH_CONCURRENCY) {
+    const pages = Array.from(
+      { length: Math.min(WORDPRESS_CATEGORY_FETCH_CONCURRENCY, totalPages - start + 1) },
+      (_, index) => start + index
+    );
+    const batch = await Promise.all(pages.map((page) => fetchWordPressCategoryPage(page)));
+    batch.forEach((result) => {
+      categories.push(...result.categories);
+    });
+  }
+  return categories;
+}
+
+async function fetchWordPressCategoriesWithWindowedDiscovery(): Promise<WordPressCategoryOption[]> {
+  const categories: WordPressCategoryOption[] = [];
+  let nextPage = 2;
+  let shouldContinue = true;
+
+  while (shouldContinue) {
+    const pages = Array.from({ length: WORDPRESS_CATEGORY_FETCH_CONCURRENCY }, (_, index) => nextPage + index);
+    const batch = await Promise.all(pages.map((page) => fetchWordPressCategoryPage(page)));
+    for (const result of batch) {
+      if (result.categories.length === 0) {
+        shouldContinue = false;
+        break;
+      }
+      categories.push(...result.categories);
+    }
+    nextPage += WORDPRESS_CATEGORY_FETCH_CONCURRENCY;
+  }
+
+  return categories;
+}
+
+async function loadWordPressCategories(): Promise<WordPressCategoryOption[]> {
+  if (wordpressCategoryCache) return wordpressCategoryCache;
+  if (wordpressCategoryPromise) return wordpressCategoryPromise;
+
+  wordpressCategoryPromise = (async () => {
+    const firstPage = await fetchWordPressCategoryPage(1);
+    const categories = [...firstPage.categories];
+
+    if (firstPage.totalPages && firstPage.totalPages > 1) {
+      categories.push(...(await fetchWordPressCategoriesWithBoundedParallel(firstPage.totalPages)));
+    } else if (firstPage.categories.length > 0) {
+      categories.push(...(await fetchWordPressCategoriesWithWindowedDiscovery()));
+    }
+
+    const deduped = Array.from(
+      categories.reduce((map, category) => map.set(category.id, category), new Map<number, WordPressCategoryOption>()).values()
+    );
+    wordpressCategoryCache = deduped;
+    wordpressCategoryPromise = null;
+    return deduped;
+  })().catch((error) => {
+    wordpressCategoryPromise = null;
+    throw error;
+  });
+
+  return wordpressCategoryPromise;
+}
+
+function normalizeCategoryLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isUncategorizedCategory(category: WordPressCategoryOption): boolean {
+  return normalizeCategoryLabel(category.name) === "uncategorized";
+}
+
+function pickFallbackCategory(categories: WordPressCategoryOption[]): WordPressCategoryOption | null {
+  if (categories.length === 0) return null;
+  return categories.find((category) => !isUncategorizedCategory(category)) ?? categories[0];
+}
+
+function buildCategoryContextTokens(product: SelectedProduct, postPackage: PostPackage): string[] {
+  const source = [
+    product.product,
+    product.companyName ?? "",
+    postPackage.name,
+    postPackage.description,
+    postPackage.short_description,
+    urlHint(postPackage.external_url)
+  ].join(" ");
+
+  return Array.from(
+    new Set(
+      source
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter((token) => token.length >= 3)
+    )
+  );
+}
+
+function scoreCategoryOption(category: WordPressCategoryOption, tokens: string[]): number {
+  const label = normalizeCategoryLabel(category.name);
+  let score = 0;
+  tokens.forEach((token, index) => {
+    if (label === token) score += 120 - index;
+    else if (label.startsWith(`${token} `) || label.endsWith(` ${token}`)) score += 70 - index;
+    else if (label.includes(token)) score += 35 - index;
+  });
+  return score;
+}
+
+function pickDeterministicCategory(
+  categories: WordPressCategoryOption[],
+  product: SelectedProduct,
+  postPackage: PostPackage
+): WordPressCategoryOption | null {
+  const tokens = buildCategoryContextTokens(product, postPackage);
+  const scored = categories
+    .filter((category) => !isUncategorizedCategory(category))
+    .map((category) => ({ category, score: scoreCategoryOption(category, tokens) }))
+    .sort((left, right) => right.score - left.score);
+  if (scored[0] && scored[0].score > 0) return scored[0].category;
+  return pickFallbackCategory(categories);
+}
+
+function buildCategoryCandidates(
+  categories: WordPressCategoryOption[],
+  product: SelectedProduct,
+  postPackage: PostPackage
+): WordPressCategoryOption[] {
+  const tokens = buildCategoryContextTokens(product, postPackage);
+  const scored = categories
+    .filter((category) => !isUncategorizedCategory(category))
+    .map((category) => ({ category, score: scoreCategoryOption(category, tokens) }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 30)
+    .map((item) => item.category);
+
+  if (scored.length > 0) return scored;
+  const filtered = categories.filter((category) => !isUncategorizedCategory(category));
+  return (filtered.length > 0 ? filtered : categories).slice(0, 30);
+}
+
 function createPackage(product: SelectedProduct): PostPackage {
   const salePrice = product.discount > 0 ? product.price : 0;
   const regularPrice = product.discount > 0
@@ -154,6 +348,7 @@ function createPackage(product: SelectedProduct): PostPackage {
     name: normalizeName(product.product),
     type: "external",
     status: "publish",
+    wordpress_category: null,
     metricool_schedule_datetime: getDefaultMetricoolSchedule(),
     metricool_status: "publish",
     featured: true,
@@ -184,6 +379,9 @@ export default function PackagePage() {
   const [aiReadyByProduct, setAiReadyByProduct] = useState<Record<string, boolean>>({});
   const [initialGeneratingIndex, setInitialGeneratingIndex] = useState<number | null>(null);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("10:00");
+  const [wordpressCategories, setWordpressCategories] = useState<WordPressCategoryOption[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const [categoriesError, setCategoriesError] = useState<string | null>(null);
 
   useEffect(() => {
     const raw = sessionStorage.getItem("pipeline:selected-products");
@@ -207,8 +405,104 @@ export default function PackagePage() {
     }
   }, []);
 
+  useEffect(() => {
+    const loadCategories = async () => {
+      setCategoriesLoading(true);
+      setCategoriesError(null);
+      try {
+        const categories = await loadWordPressCategories();
+        setWordpressCategories(categories);
+      } catch (error) {
+        setCategoriesError(getDisplayMessage(error) || "Failed to load WordPress categories");
+      } finally {
+        setCategoriesLoading(false);
+      }
+    };
+    void loadCategories();
+  }, []);
+
   const activeProduct = useMemo(() => products[activeIndex] ?? null, [products, activeIndex]);
   const activePackage = useMemo(() => packages[activeIndex] ?? null, [packages, activeIndex]);
+  const activeProductReady = useMemo(
+    () => (activeProduct ? Boolean(aiReadyByProduct[activeProduct.id]) : false),
+    [activeProduct, aiReadyByProduct]
+  );
+
+  const selectCategoryWithAI = async (
+    product: SelectedProduct,
+    base: PostPackage,
+    categories: WordPressCategoryOption[],
+    mode: "default" | "force_variation" = "default"
+  ): Promise<WordPressCategoryOption | null> => {
+    if (categories.length === 0) return null;
+
+    const candidates = buildCategoryCandidates(categories, product, base);
+    const deterministicMatch = pickDeterministicCategory(categories, product, base);
+    const prompt = `
+You choose ONE WordPress ecommerce product category.
+Return ONLY strict JSON. No markdown.
+
+Required JSON shape:
+{
+  "categoryId": 0,
+  "categoryName": ""
+}
+
+Choose exactly one category from this allowed list:
+${JSON.stringify(candidates)}
+
+Context:
+{
+  "product": ${JSON.stringify(product.product)},
+  "companyName": ${JSON.stringify(product.companyName ?? "")},
+  "platform": ${JSON.stringify(product.platform)},
+  "external_url": ${JSON.stringify(base.external_url)},
+  "url_hint_tokens": ${JSON.stringify(urlHint(base.external_url))},
+  "description": ${JSON.stringify(base.description)},
+  "short_description": ${JSON.stringify(base.short_description)}
+}
+
+Rules:
+- categoryId must come from the allowed list.
+- categoryName must match the selected allowed category exactly.
+- Choose the single best matching product category.
+${mode === "force_variation" ? "- If multiple categories are plausible, choose a different valid option than the last one." : ""}
+    `.trim();
+
+    const response = await http.post("/api/v1/claude/generate", {
+      prompt,
+      modelCandidates: AI_MODELS,
+      maxTokens: 300,
+      temperature: 0.4
+    });
+
+    const data = unwrapEnvelope<unknown>(response.data);
+    let rawText = "";
+    if (typeof data === "string") {
+      rawText = data;
+    } else if (data && typeof data === "object") {
+      const candidate =
+        (data as Record<string, unknown>).text ??
+        (data as Record<string, unknown>).output ??
+        (data as Record<string, unknown>).content ??
+        (data as Record<string, unknown>).response;
+      rawText = typeof candidate === "string" ? candidate : JSON.stringify(candidate ?? data);
+    }
+
+    const jsonText = extractJsonObject(rawText);
+    if (!jsonText) return deterministicMatch;
+    const parsed = JSON.parse(jsonText) as { categoryId?: unknown; categoryName?: unknown };
+    const categoryId = Number(parsed.categoryId);
+    const categoryName = typeof parsed.categoryName === "string" ? parsed.categoryName.trim() : "";
+
+    const exactById = categories.find((category) => category.id === categoryId);
+    if (exactById && (!categoryName || exactById.name === categoryName)) return exactById;
+
+    const exactByName = categories.find((category) => normalizeCategoryLabel(category.name) === normalizeCategoryLabel(categoryName));
+    if (exactByName) return exactByName;
+
+    return deterministicMatch;
+  };
 
   const flashSaved = () => {
     setSavedTick(true);
@@ -360,6 +654,27 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
     setAiError(null);
     setFieldLoading(index, key, true);
     try {
+      if (key === "wordpress_category") {
+        const categories = wordpressCategories.length > 0 ? wordpressCategories : await loadWordPressCategories();
+        const currentId = activePackage.wordpress_category?.id ?? null;
+        let nextCategory = await selectCategoryWithAI(activeProduct, activePackage, categories, "default");
+
+        if (!nextCategory || nextCategory.id === currentId) {
+          const secondTry = await selectCategoryWithAI(activeProduct, activePackage, categories, "force_variation");
+          if (secondTry && secondTry.id !== currentId) {
+            nextCategory = secondTry;
+          }
+        }
+
+        if (!nextCategory) {
+          throw new Error("No matching WordPress category was selected.");
+        }
+
+        patchActive("wordpress_category", nextCategory);
+        flashSaved();
+        return;
+      }
+
       const currentValue = activePackage[key];
       const firstTry = await generateFieldsWithAI(activeProduct, activePackage, [key], "default");
       let nextValue = pickFieldValue(firstTry, key).trim();
@@ -392,6 +707,15 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
     setAiError(null);
     setRegeneratingAll(true);
     try {
+      let categories = wordpressCategories;
+      if (categories.length === 0) {
+        try {
+          categories = await loadWordPressCategories();
+        } catch (error) {
+          setCategoriesError(getDisplayMessage(error) || "Failed to load WordPress categories");
+          categories = [];
+        }
+      }
       const generated = await generateFieldsWithAI(activeProduct, activePackage, [
         "Image_editing_text",
         "name",
@@ -400,7 +724,40 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
         "button_text",
         "metricool_schedule_datetime"
       ]);
-      applyGeneratedFields(index, generated);
+      const selectedCategory =
+        categories.length > 0
+          ? await selectCategoryWithAI(
+              activeProduct,
+              {
+                ...activePackage,
+                Image_editing_text: generated.Image_editing_text ?? activePackage.Image_editing_text,
+                name: generated.name ?? activePackage.name,
+                description: generated.description ?? activePackage.description,
+                short_description: generated.short_description ?? activePackage.short_description,
+                button_text: generated.button_text ?? activePackage.button_text,
+                metricool_schedule_datetime: generated.metricool_schedule_datetime ?? activePackage.metricool_schedule_datetime
+              },
+              categories
+            )
+          : null;
+      setPackages((prev) => {
+        const next = [...prev];
+        const current = next[index];
+        if (!current) return prev;
+        next[index] = {
+          ...current,
+          Image_editing_text: generated.Image_editing_text ?? current.Image_editing_text,
+          name: generated.name ?? current.name,
+          description: generated.description ?? current.description,
+          short_description: generated.short_description ?? current.short_description,
+          button_text: generated.button_text ?? current.button_text,
+          metricool_schedule_datetime: generated.metricool_schedule_datetime ?? current.metricool_schedule_datetime,
+          wordpress_category: selectedCategory ?? current.wordpress_category
+        };
+        sessionStorage.setItem("pipeline:post-packages", JSON.stringify(next));
+        return next;
+      });
+      flashSaved();
     } catch (error) {
       setAiError(getDisplayMessage(error) || "Failed to regenerate fields");
     } finally {
@@ -418,6 +775,15 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
       try {
         const nextPackages = [...packages];
         const nextReady: Record<string, boolean> = {};
+        let categories = wordpressCategories;
+        if (categories.length === 0) {
+          try {
+            categories = await loadWordPressCategories();
+          } catch (error) {
+            setCategoriesError(getDisplayMessage(error) || "Failed to load WordPress categories");
+            categories = [];
+          }
+        }
         for (let index = 0; index < products.length; index += 1) {
           setInitialGeneratingIndex(index);
           const product = products[index];
@@ -431,7 +797,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
             "button_text",
             "metricool_schedule_datetime"
           ]);
-          nextPackages[index] = {
+          const categoryContext = {
             ...current,
             Image_editing_text: generated.Image_editing_text ?? current.Image_editing_text,
             name: generated.name ?? current.name,
@@ -439,6 +805,21 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
             short_description: generated.short_description ?? current.short_description,
             button_text: generated.button_text ?? current.button_text,
             metricool_schedule_datetime: generated.metricool_schedule_datetime ?? current.metricool_schedule_datetime
+          };
+          const selectedCategory =
+            current.wordpress_category ??
+            (categories.length > 0
+              ? await selectCategoryWithAI(product, categoryContext, categories)
+              : null);
+          nextPackages[index] = {
+            ...current,
+            Image_editing_text: generated.Image_editing_text ?? current.Image_editing_text,
+            name: generated.name ?? current.name,
+            description: generated.description ?? current.description,
+            short_description: generated.short_description ?? current.short_description,
+            button_text: generated.button_text ?? current.button_text,
+            metricool_schedule_datetime: generated.metricool_schedule_datetime ?? current.metricool_schedule_datetime,
+            wordpress_category: selectedCategory ?? current.wordpress_category
           };
           nextReady[product.id] = true;
         }
@@ -453,7 +834,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
       }
     };
     void runInitialAI();
-  }, [packages, products]);
+  }, [packages, products, wordpressCategories]);
 
   const allProductsAiReady = useMemo(() => {
     if (products.length === 0) return false;
@@ -531,7 +912,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("Image_editing_text", value)}
                 onRegenerate={() => void regenField("Image_editing_text")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:Image_editing_text`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
               <Field
                 label="Post title"
@@ -539,7 +920,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("name", value)}
                 onRegenerate={() => void regenField("name")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:name`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
               
               <Field
@@ -549,7 +930,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("short_description", value)}
                 onRegenerate={() => void regenField("short_description")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:short_description`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
               <Field
                 label="Long Description"
@@ -558,7 +939,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("description", value)}
                 onRegenerate={() => void regenField("description")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:description`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
               <Field
                 label="Call to action"
@@ -566,22 +947,61 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("button_text", value)}
                 onRegenerate={() => void regenField("button_text")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:button_text`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
+              <div className="card p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">WordPress category</span>
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-[#185FA5] disabled:opacity-50"
+                    disabled={!activeProductReady || categoriesLoading || Boolean(regeneratingFields[`${activeIndex}:wordpress_category`])}
+                    onClick={() => void regenField("wordpress_category")}
+                  >
+                    {regeneratingFields[`${activeIndex}:wordpress_category`] ? "Generating..." : "✦ Regenerate"}
+                  </button>
+                </div>
+                {!activeProductReady ? (
+                  <div className="field animate-pulse opacity-75">Generating...</div>
+                ) : (
+                  <select
+                    className="field"
+                    value={activePackage.wordpress_category?.id ?? ""}
+                    onChange={(event) => {
+                      const nextId = Number(event.target.value);
+                      const selected = wordpressCategories.find((category) => category.id === nextId) ?? null;
+                      patchActive("wordpress_category", selected);
+                    }}
+                    disabled={categoriesLoading}
+                  >
+                    <option value="">{categoriesLoading ? "Loading categories..." : "Select category"}</option>
+                    {wordpressCategories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {categoriesError ? <p className="mt-2 text-xs text-amber-600">{categoriesError}</p> : null}
+              </div>
               <div className="card p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Wordpress status</span>
                 </div>
-                <select
-                  className="field"
-                  value={activePackage.status}
-                  onChange={(event) => patchActive("status", event.target.value as PostPackage["status"])}
-                >
-                  <option value="draft">draft</option>
-                  <option value="pending">pending</option>
-                  <option value="private">private</option>
-                  <option value="publish">publish</option>
-                </select>
+                {!activeProductReady ? (
+                  <div className="field animate-pulse opacity-75">Generating...</div>
+                ) : (
+                  <select
+                    className="field"
+                    value={activePackage.status}
+                    onChange={(event) => patchActive("status", event.target.value as PostPackage["status"])}
+                  >
+                    <option value="draft">draft</option>
+                    <option value="pending">pending</option>
+                    <option value="private">private</option>
+                    <option value="publish">publish</option>
+                  </select>
+                )}
               </div>
               <div className="card p-3">
                 <div className="mb-2 flex items-center justify-between">
@@ -589,104 +1009,112 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                   <button
                     type="button"
                     className="text-xs font-medium text-[#185FA5] disabled:opacity-50"
-                    disabled={Boolean(regeneratingFields[`${activeIndex}:metricool_schedule_datetime`])}
+                    disabled={!activeProductReady || Boolean(regeneratingFields[`${activeIndex}:metricool_schedule_datetime`])}
                     onClick={() => void regenField("metricool_schedule_datetime")}
                   >
                     {regeneratingFields[`${activeIndex}:metricool_schedule_datetime`] ? "Generating..." : "✦ Regenerate"}
                   </button>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-4">
-                  <input
-                    className="field sm:col-span-2"
-                    type="date"
-                    value={activeScheduleParts.date}
-                    onChange={(event) =>
-                      patchActive(
-                        "metricool_schedule_datetime",
-                        buildScheduleIso(
-                          event.target.value,
-                          activeScheduleParts.hour12,
-                          activeScheduleParts.minute,
-                          activeScheduleParts.period
+                {!activeProductReady ? (
+                  <div className="field animate-pulse opacity-75">Generating...</div>
+                ) : (
+                  <div className="grid gap-2 sm:grid-cols-4">
+                    <input
+                      className="field sm:col-span-2"
+                      type="date"
+                      value={activeScheduleParts.date}
+                      onChange={(event) =>
+                        patchActive(
+                          "metricool_schedule_datetime",
+                          buildScheduleIso(
+                            event.target.value,
+                            activeScheduleParts.hour12,
+                            activeScheduleParts.minute,
+                            activeScheduleParts.period
+                          )
                         )
-                      )
-                    }
-                  />
-                  <input
-                    className="field"
-                    list="metricool-time-options"
-                    value={scheduleTimeInput}
-                    onChange={(event) => {
-                      const nextRaw = event.target.value;
-                      setScheduleTimeInput(nextRaw);
-                      const match = nextRaw.trim().match(/^(\d{1,2}):(\d{1,2})$/);
-                      if (!match) return;
-                      const { hour12, minute } = normalizeTypedTime(nextRaw);
-                      patchActive(
-                        "metricool_schedule_datetime",
-                        buildScheduleIso(
-                          activeScheduleParts.date,
-                          hour12,
-                          minute,
-                          activeScheduleParts.period
+                      }
+                    />
+                    <input
+                      className="field"
+                      list="metricool-time-options"
+                      value={scheduleTimeInput}
+                      onChange={(event) => {
+                        const nextRaw = event.target.value;
+                        setScheduleTimeInput(nextRaw);
+                        const match = nextRaw.trim().match(/^(\d{1,2}):(\d{1,2})$/);
+                        if (!match) return;
+                        const { hour12, minute } = normalizeTypedTime(nextRaw);
+                        patchActive(
+                          "metricool_schedule_datetime",
+                          buildScheduleIso(
+                            activeScheduleParts.date,
+                            hour12,
+                            minute,
+                            activeScheduleParts.period
+                          )
+                        );
+                      }}
+                      onBlur={() => {
+                        const { hour12, minute } = normalizeTypedTime(scheduleTimeInput);
+                        setScheduleTimeInput(`${hour12}:${minute}`);
+                        patchActive(
+                          "metricool_schedule_datetime",
+                          buildScheduleIso(
+                            activeScheduleParts.date,
+                            hour12,
+                            minute,
+                            activeScheduleParts.period
+                          )
+                        );
+                      }}
+                    />
+                    <datalist id="metricool-time-options">
+                      {Array.from({ length: 12 }).flatMap((_, index) => {
+                        const hour = String(index + 1).padStart(2, "0");
+                        const minutes = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"];
+                        return minutes.map((minute) => (
+                          <option key={`${hour}:${minute}`} value={`${hour}:${minute}`} />
+                        ));
+                      })}
+                    </datalist>
+                    <select
+                      className="field"
+                      value={activeScheduleParts.period}
+                      onChange={(event) =>
+                        patchActive(
+                          "metricool_schedule_datetime",
+                          buildScheduleIso(
+                            activeScheduleParts.date,
+                            activeScheduleParts.hour12,
+                            activeScheduleParts.minute,
+                            event.target.value as "AM" | "PM"
+                          )
                         )
-                      );
-                    }}
-                    onBlur={() => {
-                      const { hour12, minute } = normalizeTypedTime(scheduleTimeInput);
-                      setScheduleTimeInput(`${hour12}:${minute}`);
-                      patchActive(
-                        "metricool_schedule_datetime",
-                        buildScheduleIso(
-                          activeScheduleParts.date,
-                          hour12,
-                          minute,
-                          activeScheduleParts.period
-                        )
-                      );
-                    }}
-                  />
-                  <datalist id="metricool-time-options">
-                    {Array.from({ length: 12 }).flatMap((_, index) => {
-                      const hour = String(index + 1).padStart(2, "0");
-                      const minutes = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"];
-                      return minutes.map((minute) => (
-                        <option key={`${hour}:${minute}`} value={`${hour}:${minute}`} />
-                      ));
-                    })}
-                  </datalist>
-                  <select
-                    className="field"
-                    value={activeScheduleParts.period}
-                    onChange={(event) =>
-                      patchActive(
-                        "metricool_schedule_datetime",
-                        buildScheduleIso(
-                          activeScheduleParts.date,
-                          activeScheduleParts.hour12,
-                          activeScheduleParts.minute,
-                          event.target.value as "AM" | "PM"
-                        )
-                      )
-                    }
-                  >
-                    <option value="AM">AM</option>
-                    <option value="PM">PM</option>
-                  </select>
-                </div>
+                      }
+                    >
+                      <option value="AM">AM</option>
+                      <option value="PM">PM</option>
+                    </select>
+                  </div>
+                )}
               </div>
               <div className="card p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Metricool status</span>
                 </div>
-                <select
-                  className="field"
-                  value={activePackage.metricool_status}
-                  onChange={(event) => patchActive("metricool_status", event.target.value as PostPackage["metricool_status"])}
-                >
-                  <option value="draft">draft</option>
-                  <option value="publish">publish</option>
-                </select>
+                {!activeProductReady ? (
+                  <div className="field animate-pulse opacity-75">Generating...</div>
+                ) : (
+                  <select
+                    className="field"
+                    value={activePackage.metricool_status}
+                    onChange={(event) => patchActive("metricool_status", event.target.value as PostPackage["metricool_status"])}
+                  >
+                    <option value="draft">draft</option>
+                    <option value="publish">publish</option>
+                  </select>
+                )}
               </div>
 
             </div>
@@ -709,6 +1137,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
               <div className="flex justify-between"><span className="text-slate-500">Template</span><strong>{templateName ?? templateId ?? "Not selected"}</strong></div>
               <div className="flex justify-between"><span className="text-slate-500">Products</span><strong>{products.length}</strong></div>
               <div className="flex justify-between"><span className="text-slate-500">Platform</span><span>{activeProduct?.platform ?? "-"}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Category</span><span>{activePackage?.wordpress_category?.name ?? "Not selected"}</span></div>
             </div>
           </div>
 
