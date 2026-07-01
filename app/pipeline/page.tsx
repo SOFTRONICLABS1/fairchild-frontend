@@ -35,6 +35,10 @@ type PostPackage = {
   name: string;
   type: "external";
   status: "draft" | "pending" | "private" | "publish";
+  wordpress_category: {
+    id: number;
+    name: string;
+  } | null;
   metricool_schedule_datetime: string;
   metricool_status: "draft" | "publish";
   featured: boolean;
@@ -113,7 +117,12 @@ type PinterestBoard = {
   name: string;
 };
 
-type WordPressProductPayload = Omit<PostPackage, "Image_editing_text" | "metricool_schedule_datetime" | "metricool_status">;
+type WordPressProductPayload = Omit<
+  PostPackage,
+  "Image_editing_text" | "metricool_schedule_datetime" | "metricool_status" | "wordpress_category"
+> & {
+  categories?: Array<{ id: number }>;
+};
 
 const PIPELINE_STEPS = [
   "Create post package",
@@ -456,6 +465,7 @@ export default function PipelinePage() {
       name: product.product || "Keyname_Value",
       type: "external",
       status: "publish",
+      wordpress_category: null,
       metricool_schedule_datetime: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19),
       metricool_status: "publish",
       featured: true,
@@ -501,6 +511,7 @@ export default function PipelinePage() {
     button_text: postPackage.button_text,
     regular_price: postPackage.regular_price,
     sale_price: postPackage.sale_price,
+    categories: postPackage.wordpress_category ? [{ id: postPackage.wordpress_category.id }] : [],
     images: [{ id: mediaId }],
     meta_data: postPackage.meta_data
   });
