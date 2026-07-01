@@ -337,29 +337,6 @@ function buildCategoryCandidates(
   return (filtered.length > 0 ? filtered : categories).slice(0, 30);
 }
 
-function normalizeStoredPackage(raw: unknown, product: SelectedProduct): PostPackage {
-  const fallback = createPackage(product);
-  if (!raw || typeof raw !== "object") return fallback;
-  const value = raw as Partial<PostPackage> & {
-    wordpress_category?: Partial<WordPressCategoryOption> | null;
-  };
-
-  return {
-    ...fallback,
-    ...value,
-    wordpress_category: null
-  };
-}
-
-function isPackageAiGenerated(pkg: PostPackage): boolean {
-  return Boolean(
-    pkg.wordpress_category &&
-    pkg.Image_editing_text !== "Keyname_Value" &&
-      pkg.description !== "Keyname_Value" &&
-      pkg.short_description !== "Keyname_Value"
-  );
-}
-
 function createPackage(product: SelectedProduct): PostPackage {
   const salePrice = product.discount > 0 ? product.price : 0;
   const regularPrice = product.discount > 0
@@ -414,20 +391,11 @@ export default function PackagePage() {
     try {
       const parsed = JSON.parse(raw) as SelectedProduct[];
       setProducts(parsed);
-      const storedPackagesRaw = sessionStorage.getItem("pipeline:post-packages");
-      let created = parsed.map(createPackage);
-      if (storedPackagesRaw) {
-        try {
-          const storedPackages = JSON.parse(storedPackagesRaw) as unknown[];
-          created = parsed.map((product, index) => normalizeStoredPackage(storedPackages[index], product));
-        } catch {
-          created = parsed.map(createPackage);
-        }
-      }
+      const created = parsed.map(createPackage);
       setPackages(created);
       const defaultAiReady: Record<string, boolean> = {};
-      parsed.forEach((product, index) => {
-        defaultAiReady[product.id] = isPackageAiGenerated(created[index]);
+      parsed.forEach((product) => {
+        defaultAiReady[product.id] = false;
       });
       setAiReadyByProduct(defaultAiReady);
       sessionStorage.setItem("pipeline:post-packages", JSON.stringify(created));
@@ -455,6 +423,10 @@ export default function PackagePage() {
 
   const activeProduct = useMemo(() => products[activeIndex] ?? null, [products, activeIndex]);
   const activePackage = useMemo(() => packages[activeIndex] ?? null, [packages, activeIndex]);
+  const activeProductReady = useMemo(
+    () => (activeProduct ? Boolean(aiReadyByProduct[activeProduct.id]) : false),
+    [activeProduct, aiReadyByProduct]
+  );
 
   const selectCategoryWithAI = async (
     product: SelectedProduct,
@@ -940,7 +912,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("Image_editing_text", value)}
                 onRegenerate={() => void regenField("Image_editing_text")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:Image_editing_text`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
               <Field
                 label="Post title"
@@ -948,7 +920,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("name", value)}
                 onRegenerate={() => void regenField("name")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:name`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
               
               <Field
@@ -958,7 +930,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("short_description", value)}
                 onRegenerate={() => void regenField("short_description")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:short_description`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
               <Field
                 label="Long Description"
@@ -967,7 +939,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("description", value)}
                 onRegenerate={() => void regenField("description")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:description`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
               <Field
                 label="Call to action"
@@ -975,7 +947,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                 onChange={(value) => patchActive("button_text", value)}
                 onRegenerate={() => void regenField("button_text")}
                 regenerating={Boolean(regeneratingFields[`${activeIndex}:button_text`])}
-                initialGenerating={regeneratingAll && initialGeneratingIndex === activeIndex}
+                initialGenerating={!activeProductReady}
               />
               <div className="card p-3">
                 <div className="mb-2 flex items-center justify-between">
@@ -983,45 +955,53 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                   <button
                     type="button"
                     className="text-xs font-medium text-[#185FA5] disabled:opacity-50"
-                    disabled={categoriesLoading || Boolean(regeneratingFields[`${activeIndex}:wordpress_category`])}
+                    disabled={!activeProductReady || categoriesLoading || Boolean(regeneratingFields[`${activeIndex}:wordpress_category`])}
                     onClick={() => void regenField("wordpress_category")}
                   >
                     {regeneratingFields[`${activeIndex}:wordpress_category`] ? "Generating..." : "✦ Regenerate"}
                   </button>
                 </div>
-                <select
-                  className="field"
-                  value={activePackage.wordpress_category?.id ?? ""}
-                  onChange={(event) => {
-                    const nextId = Number(event.target.value);
-                    const selected = wordpressCategories.find((category) => category.id === nextId) ?? null;
-                    patchActive("wordpress_category", selected);
-                  }}
-                  disabled={categoriesLoading}
-                >
-                  <option value="">{categoriesLoading ? "Loading categories..." : "Select category"}</option>
-                  {wordpressCategories.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
+                {!activeProductReady ? (
+                  <div className="field animate-pulse opacity-75">Generating...</div>
+                ) : (
+                  <select
+                    className="field"
+                    value={activePackage.wordpress_category?.id ?? ""}
+                    onChange={(event) => {
+                      const nextId = Number(event.target.value);
+                      const selected = wordpressCategories.find((category) => category.id === nextId) ?? null;
+                      patchActive("wordpress_category", selected);
+                    }}
+                    disabled={categoriesLoading}
+                  >
+                    <option value="">{categoriesLoading ? "Loading categories..." : "Select category"}</option>
+                    {wordpressCategories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 {categoriesError ? <p className="mt-2 text-xs text-amber-600">{categoriesError}</p> : null}
               </div>
               <div className="card p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Wordpress status</span>
                 </div>
-                <select
-                  className="field"
-                  value={activePackage.status}
-                  onChange={(event) => patchActive("status", event.target.value as PostPackage["status"])}
-                >
-                  <option value="draft">draft</option>
-                  <option value="pending">pending</option>
-                  <option value="private">private</option>
-                  <option value="publish">publish</option>
-                </select>
+                {!activeProductReady ? (
+                  <div className="field animate-pulse opacity-75">Generating...</div>
+                ) : (
+                  <select
+                    className="field"
+                    value={activePackage.status}
+                    onChange={(event) => patchActive("status", event.target.value as PostPackage["status"])}
+                  >
+                    <option value="draft">draft</option>
+                    <option value="pending">pending</option>
+                    <option value="private">private</option>
+                    <option value="publish">publish</option>
+                  </select>
+                )}
               </div>
               <div className="card p-3">
                 <div className="mb-2 flex items-center justify-between">
@@ -1029,104 +1009,112 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
                   <button
                     type="button"
                     className="text-xs font-medium text-[#185FA5] disabled:opacity-50"
-                    disabled={Boolean(regeneratingFields[`${activeIndex}:metricool_schedule_datetime`])}
+                    disabled={!activeProductReady || Boolean(regeneratingFields[`${activeIndex}:metricool_schedule_datetime`])}
                     onClick={() => void regenField("metricool_schedule_datetime")}
                   >
                     {regeneratingFields[`${activeIndex}:metricool_schedule_datetime`] ? "Generating..." : "✦ Regenerate"}
                   </button>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-4">
-                  <input
-                    className="field sm:col-span-2"
-                    type="date"
-                    value={activeScheduleParts.date}
-                    onChange={(event) =>
-                      patchActive(
-                        "metricool_schedule_datetime",
-                        buildScheduleIso(
-                          event.target.value,
-                          activeScheduleParts.hour12,
-                          activeScheduleParts.minute,
-                          activeScheduleParts.period
+                {!activeProductReady ? (
+                  <div className="field animate-pulse opacity-75">Generating...</div>
+                ) : (
+                  <div className="grid gap-2 sm:grid-cols-4">
+                    <input
+                      className="field sm:col-span-2"
+                      type="date"
+                      value={activeScheduleParts.date}
+                      onChange={(event) =>
+                        patchActive(
+                          "metricool_schedule_datetime",
+                          buildScheduleIso(
+                            event.target.value,
+                            activeScheduleParts.hour12,
+                            activeScheduleParts.minute,
+                            activeScheduleParts.period
+                          )
                         )
-                      )
-                    }
-                  />
-                  <input
-                    className="field"
-                    list="metricool-time-options"
-                    value={scheduleTimeInput}
-                    onChange={(event) => {
-                      const nextRaw = event.target.value;
-                      setScheduleTimeInput(nextRaw);
-                      const match = nextRaw.trim().match(/^(\d{1,2}):(\d{1,2})$/);
-                      if (!match) return;
-                      const { hour12, minute } = normalizeTypedTime(nextRaw);
-                      patchActive(
-                        "metricool_schedule_datetime",
-                        buildScheduleIso(
-                          activeScheduleParts.date,
-                          hour12,
-                          minute,
-                          activeScheduleParts.period
+                      }
+                    />
+                    <input
+                      className="field"
+                      list="metricool-time-options"
+                      value={scheduleTimeInput}
+                      onChange={(event) => {
+                        const nextRaw = event.target.value;
+                        setScheduleTimeInput(nextRaw);
+                        const match = nextRaw.trim().match(/^(\d{1,2}):(\d{1,2})$/);
+                        if (!match) return;
+                        const { hour12, minute } = normalizeTypedTime(nextRaw);
+                        patchActive(
+                          "metricool_schedule_datetime",
+                          buildScheduleIso(
+                            activeScheduleParts.date,
+                            hour12,
+                            minute,
+                            activeScheduleParts.period
+                          )
+                        );
+                      }}
+                      onBlur={() => {
+                        const { hour12, minute } = normalizeTypedTime(scheduleTimeInput);
+                        setScheduleTimeInput(`${hour12}:${minute}`);
+                        patchActive(
+                          "metricool_schedule_datetime",
+                          buildScheduleIso(
+                            activeScheduleParts.date,
+                            hour12,
+                            minute,
+                            activeScheduleParts.period
+                          )
+                        );
+                      }}
+                    />
+                    <datalist id="metricool-time-options">
+                      {Array.from({ length: 12 }).flatMap((_, index) => {
+                        const hour = String(index + 1).padStart(2, "0");
+                        const minutes = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"];
+                        return minutes.map((minute) => (
+                          <option key={`${hour}:${minute}`} value={`${hour}:${minute}`} />
+                        ));
+                      })}
+                    </datalist>
+                    <select
+                      className="field"
+                      value={activeScheduleParts.period}
+                      onChange={(event) =>
+                        patchActive(
+                          "metricool_schedule_datetime",
+                          buildScheduleIso(
+                            activeScheduleParts.date,
+                            activeScheduleParts.hour12,
+                            activeScheduleParts.minute,
+                            event.target.value as "AM" | "PM"
+                          )
                         )
-                      );
-                    }}
-                    onBlur={() => {
-                      const { hour12, minute } = normalizeTypedTime(scheduleTimeInput);
-                      setScheduleTimeInput(`${hour12}:${minute}`);
-                      patchActive(
-                        "metricool_schedule_datetime",
-                        buildScheduleIso(
-                          activeScheduleParts.date,
-                          hour12,
-                          minute,
-                          activeScheduleParts.period
-                        )
-                      );
-                    }}
-                  />
-                  <datalist id="metricool-time-options">
-                    {Array.from({ length: 12 }).flatMap((_, index) => {
-                      const hour = String(index + 1).padStart(2, "0");
-                      const minutes = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"];
-                      return minutes.map((minute) => (
-                        <option key={`${hour}:${minute}`} value={`${hour}:${minute}`} />
-                      ));
-                    })}
-                  </datalist>
-                  <select
-                    className="field"
-                    value={activeScheduleParts.period}
-                    onChange={(event) =>
-                      patchActive(
-                        "metricool_schedule_datetime",
-                        buildScheduleIso(
-                          activeScheduleParts.date,
-                          activeScheduleParts.hour12,
-                          activeScheduleParts.minute,
-                          event.target.value as "AM" | "PM"
-                        )
-                      )
-                    }
-                  >
-                    <option value="AM">AM</option>
-                    <option value="PM">PM</option>
-                  </select>
-                </div>
+                      }
+                    >
+                      <option value="AM">AM</option>
+                      <option value="PM">PM</option>
+                    </select>
+                  </div>
+                )}
               </div>
               <div className="card p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Metricool status</span>
                 </div>
-                <select
-                  className="field"
-                  value={activePackage.metricool_status}
-                  onChange={(event) => patchActive("metricool_status", event.target.value as PostPackage["metricool_status"])}
-                >
-                  <option value="draft">draft</option>
-                  <option value="publish">publish</option>
-                </select>
+                {!activeProductReady ? (
+                  <div className="field animate-pulse opacity-75">Generating...</div>
+                ) : (
+                  <select
+                    className="field"
+                    value={activePackage.metricool_status}
+                    onChange={(event) => patchActive("metricool_status", event.target.value as PostPackage["metricool_status"])}
+                  >
+                    <option value="draft">draft</option>
+                    <option value="publish">publish</option>
+                  </select>
+                )}
               </div>
 
             </div>
