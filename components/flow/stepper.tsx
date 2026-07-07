@@ -9,7 +9,7 @@ type Step = {
 };
 
 const FLOW_STEPS: Step[] = [
-  { href: "/search", label: "Search" },
+  { href: "/affiliate/search", label: "Search" },
   { href: "/results", label: "Select Products" },
   { href: "/review", label: "Review" },
   { href: "/template", label: "Select Template" },
