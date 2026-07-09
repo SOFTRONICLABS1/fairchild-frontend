@@ -117,6 +117,10 @@ type PinterestBoard = {
   name: string;
 };
 
+type MetricoolUploadResponse = {
+  raw_text?: string;
+};
+
 type WordPressProductPayload = Omit<
   PostPackage,
   "Image_editing_text" | "metricool_schedule_datetime" | "metricool_status" | "wordpress_category"
@@ -131,6 +135,19 @@ const PIPELINE_STEPS = [
   "Schedule to Metricool"
 ];
 const METRICOOL_TEXT_LIMIT = 500;
+
+function inferImageExtension(contentType: string | null): string {
+  switch ((contentType ?? "").toLowerCase()) {
+    case "image/png":
+      return "png";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    default:
+      return "jpg";
+  }
+}
 
 function normalizeForMatch(value: string): string {
   return value
@@ -808,7 +825,41 @@ Context:
 
         setProductStep(product.id, 3, "running");
         if (options.metricool) {
-          const mediaUrl = mediaUploadData.guid?.rendered ?? "";
+          pushLog("info", `[${product.product}] fetching rendered image for Metricool upload`);
+          const renderImageResponse = await fetch(renderData.href);
+          if (!renderImageResponse.ok) {
+            throw new Error(`Failed to fetch rendered image for Metricool upload (${renderImageResponse.status})`);
+          }
+          const renderImageContentType = renderImageResponse.headers.get("content-type");
+          if (!renderImageContentType?.startsWith("image/")) {
+            throw new Error("Rendered asset is not a valid image for Metricool upload.");
+          }
+          const renderImageBlob = await renderImageResponse.blob();
+          pushLog("ok", `[${product.product}] rendered image fetched`);
+
+          const metricoolUploadForm = new FormData();
+          metricoolUploadForm.append(
+            "picture",
+            renderImageBlob,
+            `metricool-${product.id}.${inferImageExtension(renderImageContentType)}`
+          );
+          const metricoolUploadResponse = await http.post(
+            "/api/v1/metricool/upload",
+            metricoolUploadForm,
+            {
+              params: { userId: "1981059", blogId: "3410405" },
+              headers: {
+                "Content-Type": "multipart/form-data"
+              }
+            }
+          );
+          const metricoolUploadData = unwrapEnvelope<MetricoolUploadResponse>(metricoolUploadResponse.data);
+          const mediaUrl = metricoolUploadData.raw_text?.trim() ?? "";
+          if (!mediaUrl) {
+            pushLog("err", `[${product.product}] Metricool upload failed: no hosted media URL returned`);
+            throw new Error("Metricool upload did not return a hosted media URL.");
+          }
+          pushLog("ok", `[${product.product}] Metricool media uploaded`);
           const wpPermalink = wpProductData.permalink ?? "";
           const metricoolText = await generateMetricoolText(product, basePostPackage, wpPermalink);
           const boardMatch = pickBestPinterestBoard(product.product, product.companyName, pinterestBoards);
