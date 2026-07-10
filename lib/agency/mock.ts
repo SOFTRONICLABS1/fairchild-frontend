@@ -3,12 +3,22 @@
 export const AGENCY_SESSION_ROWS_KEY = "agency:upload-rows";
 export const AGENCY_SESSION_PACKAGES_KEY = "agency:packages";
 
+export type AgencyAssetType = "image" | "video";
+export type AgencySocialStatus = "Draft" | "Needs review" | "Ready";
+export type AgencyPackageView = "google" | "social";
+export type AgencyPackageMode = "google" | "social" | "both";
+export type SocialPlatformId = "facebook" | "instagram" | "linkedin" | "pinterest" | "reddit" | "tiktok" | "twitter";
+
 export type AgencyRow = {
   id: string;
   brandId?: string;
   locationId?: string;
   location: string;
   landingPageUrl: string;
+  assetType: AgencyAssetType;
+  assetDataUrl: string;
+  assetName: string;
+  assetDurationSeconds?: number;
   imageDataUrl: string;
   imageName: string;
   imageWidth?: number;
@@ -28,6 +38,10 @@ export type AgencyPackage = {
   locationId?: string;
   location: string;
   landingPageUrl: string;
+  assetType: AgencyAssetType;
+  assetDataUrl: string;
+  assetName: string;
+  assetDurationSeconds?: number;
   imageDataUrl: string;
   imageName: string;
   campaignName: string;
@@ -38,6 +52,12 @@ export type AgencyPackage = {
   cta: string;
   targetingLocations: string[];
   status: "Draft" | "Needs review" | "Ready";
+  socialPostTitle: string;
+  socialCaption: string;
+  socialCta: string;
+  selectedSocialPlatforms: SocialPlatformId[];
+  socialStatus: AgencySocialStatus;
+  packageMode: AgencyPackageMode;
   selectedTemplateId: string;
   warnings: string[];
 };
@@ -80,6 +100,10 @@ function toTitleCase(value: string): string {
     .join(" ");
 }
 
+function clampText(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1).trim()}…`;
+}
+
 export function deriveDomain(url: string): string {
   try {
     const parsed = new URL(url);
@@ -90,7 +114,7 @@ export function deriveDomain(url: string): string {
 }
 
 export function rowIsValid(row: AgencyRow): boolean {
-  return Boolean(row.location.trim() && row.landingPageUrl.trim() && row.imageDataUrl);
+  return Boolean(row.location.trim() && row.landingPageUrl.trim() && (row.assetDataUrl || row.imageDataUrl));
 }
 
 export function createEmptyAgencyRow(): AgencyRow {
@@ -99,6 +123,9 @@ export function createEmptyAgencyRow(): AgencyRow {
     brandId: undefined,
     location: "",
     landingPageUrl: "",
+    assetType: "image",
+    assetDataUrl: "",
+    assetName: "",
     imageDataUrl: "",
     imageName: ""
   };
@@ -147,6 +174,11 @@ export function mockAgencyPackage(row: AgencyRow): AgencyPackage {
   ].slice(0, 4);
 
   const pathBase = slugify(locationName).split("-").filter(Boolean).slice(0, 2).join("/");
+  const socialTitle = clampText(`${domainName} in ${locationName}`, 70);
+  const socialCaption = clampText(
+    `Discover ${domainName} in ${locationName}. Explore local offers, standout creative, and click through to learn more.`,
+    220
+  );
 
   return {
     rowId: row.id,
@@ -154,6 +186,10 @@ export function mockAgencyPackage(row: AgencyRow): AgencyPackage {
     locationId: row.locationId,
     location: row.location,
     landingPageUrl: row.landingPageUrl,
+    assetType: row.assetType ?? "image",
+    assetDataUrl: row.assetDataUrl || row.imageDataUrl,
+    assetName: row.assetName || row.imageName,
+    assetDurationSeconds: row.assetDurationSeconds,
     imageDataUrl: row.imageDataUrl,
     imageName: row.imageName,
     campaignName: `${domainName} - ${locationName} - Local Campaign`,
@@ -164,6 +200,12 @@ export function mockAgencyPackage(row: AgencyRow): AgencyPackage {
     cta: "Book now",
     targetingLocations: [],
     status: "Ready",
+    socialPostTitle: socialTitle,
+    socialCaption,
+    socialCta: "Learn more",
+    selectedSocialPlatforms: ["facebook", "instagram"],
+    socialStatus: "Ready",
+    packageMode: "both",
     selectedTemplateId: AGENCY_TEMPLATES[0].id,
     warnings: deriveWarnings(row)
   };
@@ -179,8 +221,11 @@ export function deriveWarnings(row: AgencyRow): string[] {
     if (row.imageWidth < 900 || row.imageHeight < 900) {
       warnings.push("Resolution is on the low side for ad creative.");
     }
-  } else if (row.imageDataUrl) {
-    warnings.push("Image dimensions unavailable; review fit before publish.");
+  } else if (row.assetDataUrl || row.imageDataUrl) {
+    warnings.push(`${row.assetType === "video" ? "Video" : "Image"} dimensions unavailable; review fit before publish.`);
+  }
+  if (row.assetType === "video" && row.assetDurationSeconds && row.assetDurationSeconds > 30) {
+    warnings.push("Video is long for a quick preview. Review before publish.");
   }
   if (row.imageName && /text|poster|flyer|banner/i.test(row.imageName)) {
     warnings.push("Creative may contain heavy text; review readability.");
@@ -198,15 +243,35 @@ export function packageCompleteness(pkg: AgencyPackage): number {
   if (pkg.keywords.filter(Boolean).length > 0) score += 1;
   if (pkg.headlines.filter(Boolean).length >= 5) score += 1;
   if (pkg.descriptions.filter(Boolean).length >= 4) score += 1;
+  if (pkg.socialPostTitle.trim()) score += 1;
+  if (pkg.socialCaption.trim()) score += 1;
+  if (pkg.socialCta.trim()) score += 1;
+  if (pkg.selectedSocialPlatforms.length > 0) score += 1;
   if (pkg.selectedTemplateId) score += 1;
-  return Math.round((score / 8) * 100);
+  return Math.round((score / 12) * 100);
 }
 
 export function loadAgencyRows(): AgencyRow[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = sessionStorage.getItem(AGENCY_SESSION_ROWS_KEY);
-    return raw ? (JSON.parse(raw) as AgencyRow[]) : [];
+    return raw
+      ? (JSON.parse(raw) as Array<Partial<AgencyRow>>).map((row) => ({
+          id: row.id ?? `agency-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          brandId: row.brandId,
+          locationId: row.locationId,
+          location: row.location ?? "",
+          landingPageUrl: row.landingPageUrl ?? "",
+          assetType: row.assetType ?? "image",
+          assetDataUrl: row.assetDataUrl ?? row.imageDataUrl ?? "",
+          assetName: row.assetName ?? row.imageName ?? "",
+          assetDurationSeconds: row.assetDurationSeconds,
+          imageDataUrl: row.imageDataUrl ?? row.assetDataUrl ?? "",
+          imageName: row.imageName ?? row.assetName ?? "",
+          imageWidth: row.imageWidth,
+          imageHeight: row.imageHeight
+        }))
+      : [];
   } catch {
     return [];
   }
@@ -222,10 +287,21 @@ export function loadAgencyPackages(): AgencyPackage[] {
   try {
     const raw = sessionStorage.getItem(AGENCY_SESSION_PACKAGES_KEY);
     return raw
-      ? (JSON.parse(raw) as AgencyPackage[]).map((pkg) => ({
+      ? (JSON.parse(raw) as Array<Partial<AgencyPackage>>).map((pkg) => ({
           ...pkg,
-          targetingLocations: Array.isArray(pkg.targetingLocations) ? pkg.targetingLocations : []
-        }))
+          assetType: pkg.assetType ?? "image",
+          assetDataUrl: pkg.assetDataUrl ?? pkg.imageDataUrl ?? "",
+          assetName: pkg.assetName ?? pkg.imageName ?? "",
+          imageDataUrl: pkg.imageDataUrl ?? pkg.assetDataUrl ?? "",
+          imageName: pkg.imageName ?? pkg.assetName ?? "",
+          targetingLocations: Array.isArray(pkg.targetingLocations) ? pkg.targetingLocations : [],
+          socialPostTitle: pkg.socialPostTitle ?? `${pkg.location ?? "Location"} • ${pkg.campaignName ?? "Campaign"}`,
+          socialCaption: pkg.socialCaption ?? `Share ${pkg.location ?? "this location"} across your selected social channels with a single reviewed creative package.`,
+          socialCta: pkg.socialCta ?? "Learn more",
+          selectedSocialPlatforms: Array.isArray(pkg.selectedSocialPlatforms) && pkg.selectedSocialPlatforms.length > 0 ? pkg.selectedSocialPlatforms as SocialPlatformId[] : ["facebook", "instagram"],
+          socialStatus: pkg.socialStatus ?? pkg.status ?? "Draft",
+          packageMode: pkg.packageMode ?? "both"
+        })) as AgencyPackage[]
       : [];
   } catch {
     return [];
