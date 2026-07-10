@@ -11,6 +11,7 @@ import { clearAgencyAuth, loadAgencyAuth, loadSelectedBrandId, saveSelectedBrand
 import { getDisplayMessage } from "@/lib/api/errors";
 import {
   AGENCY_SESSION_PACKAGES_KEY,
+  AgencyAssetType,
   AgencyRow,
   createEmptyAgencyRow,
   loadAgencyRows,
@@ -22,12 +23,37 @@ async function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(new Error("Failed to read image"));
+    reader.onerror = () => reject(new Error("Failed to read file"));
     reader.readAsDataURL(file);
   });
 }
 
-async function readImageMetrics(dataUrl: string): Promise<{ width: number; height: number }> {
+async function fileToPreviewUrl(file: File, assetType: AgencyAssetType): Promise<string> {
+  if (assetType === "video") {
+    return URL.createObjectURL(file);
+  }
+  return fileToDataUrl(file);
+}
+
+async function readMediaMetrics(
+  dataUrl: string,
+  assetType: AgencyAssetType
+): Promise<{ width?: number; height?: number; durationSeconds?: number }> {
+  if (assetType === "video") {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.onloadedmetadata = () =>
+        resolve({
+          width: video.videoWidth,
+          height: video.videoHeight,
+          durationSeconds: Number.isFinite(video.duration) ? Math.round(video.duration) : undefined
+        });
+      video.onerror = () => reject(new Error("Failed to inspect video"));
+      video.src = dataUrl;
+    });
+  }
+
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve({ width: image.width, height: image.height });
@@ -40,6 +66,7 @@ export default function AgencyUploadPage() {
   const router = useRouter();
   const [rows, setRows] = useState<AgencyRow[]>([]);
   const [busyRowId, setBusyRowId] = useState<string | null>(null);
+  const [previewRow, setPreviewRow] = useState<AgencyRow | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [brandOptions, setBrandOptions] = useState<AgencyBrand[]>([]);
   const [selectedBrandId, setSelectedBrandId] = useState("");
@@ -179,14 +206,19 @@ export default function AgencyUploadPage() {
     });
   };
 
-  const onImageSelected = async (rowId: string, file: File | null) => {
+  const onAssetSelected = async (rowId: string, file: File | null) => {
     if (!file) return;
     setBusyRowId(rowId);
     try {
-      const imageDataUrl = await fileToDataUrl(file);
-      const metrics = await readImageMetrics(imageDataUrl);
+      const assetType: AgencyAssetType = file.type.startsWith("video/") ? "video" : "image";
+      const assetDataUrl = await fileToPreviewUrl(file, assetType);
+      const metrics = await readMediaMetrics(assetDataUrl, assetType);
       patchRow(rowId, {
-        imageDataUrl,
+        assetType,
+        assetDataUrl,
+        assetName: file.name,
+        assetDurationSeconds: metrics.durationSeconds,
+        imageDataUrl: assetDataUrl,
         imageName: file.name,
         imageWidth: metrics.width,
         imageHeight: metrics.height
@@ -284,7 +316,7 @@ export default function AgencyUploadPage() {
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold">Location {index + 1}</p>
-                      <p className="text-xs text-slate-500">{isValid ? "Ready for package generation" : "Add image, location, and landing page URL"}</p>
+                      <p className="text-xs text-slate-500">{isValid ? "Ready for package generation" : "Add image or video, location, and landing page URL"}</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className={`prod-status-pill ${isValid ? "done" : "waiting"}`}>{isValid ? "Ready" : "Incomplete"}</span>
@@ -294,12 +326,24 @@ export default function AgencyUploadPage() {
 
                   <div className="grid gap-4 lg:grid-cols-[240px_1fr_1fr_1fr]">
                     <div className="agency-upload-box">
-                      {row.imageDataUrl ? (
-                        <img src={row.imageDataUrl} alt={row.imageName || "Uploaded creative"} className="h-full w-full object-cover" />
+                      {row.assetDataUrl || row.imageDataUrl ? (
+                        row.assetType === "video" ? (
+                          <div className="h-full w-full bg-slate-100">
+                            <video
+                              src={row.assetDataUrl || row.imageDataUrl}
+                              className="h-full w-full object-cover"
+                              muted
+                              playsInline
+                              preload="metadata"
+                            />
+                          </div>
+                        ) : (
+                          <img src={row.assetDataUrl || row.imageDataUrl} alt={row.assetName || row.imageName || "Uploaded creative"} className="h-full w-full object-cover" />
+                        )
                       ) : (
                         <div className="agency-upload-placeholder">
-                          <span className="text-sm font-medium text-slate-600">Select image</span>
-                          <span className="text-xs text-slate-500">One image per location</span>
+                          <span className="text-sm font-medium text-slate-600">Select an image or video</span>
+                          <span className="text-xs text-slate-500">One image or video per location</span>
                         </div>
                       )}
                       <input
@@ -307,18 +351,29 @@ export default function AgencyUploadPage() {
                           fileInputRefs.current[row.id] = node;
                         }}
                         type="file"
-                        accept="image/*"
+                        accept="image/*,video/*"
                         className="hidden"
-                        onChange={(event) => void onImageSelected(row.id, event.target.files?.[0] ?? null)}
+                        onChange={(event) => void onAssetSelected(row.id, event.target.files?.[0] ?? null)}
                       />
-                      <button
-                        type="button"
-                        className="btn-primary agency-upload-trigger"
-                        onClick={() => fileInputRefs.current[row.id]?.click()}
-                        disabled={busyRowId === row.id}
-                      >
-                        {busyRowId === row.id ? "Processing..." : row.imageDataUrl ? "Replace image" : "Select image"}
-                      </button>
+                      <div className="absolute bottom-3 left-3 right-3 flex gap-2">
+                        <button
+                          type="button"
+                          className="btn-primary flex-1"
+                          onClick={() => fileInputRefs.current[row.id]?.click()}
+                          disabled={busyRowId === row.id}
+                        >
+                          {busyRowId === row.id ? "Processing..." : row.assetDataUrl || row.imageDataUrl ? "Replace" : "Select an image or video"}
+                        </button>
+                        {row.assetDataUrl || row.imageDataUrl ? (
+                          <button
+                            type="button"
+                            className="btn-secondary flex-1"
+                            onClick={() => setPreviewRow(row)}
+                          >
+                            Preview
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
 
                     <label className="block">
@@ -376,6 +431,37 @@ export default function AgencyUploadPage() {
           </div>
         </div>
       </div>
+      {previewRow ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4" onClick={() => setPreviewRow(null)}>
+          <div className="w-full max-w-3xl rounded-2xl bg-white p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">{previewRow.location || "Creative preview"}</p>
+                <p className="text-xs text-slate-500">{previewRow.assetName || previewRow.imageName || "Uploaded asset"}</p>
+              </div>
+              <button type="button" className="text-sm text-slate-500 hover:text-slate-900" onClick={() => setPreviewRow(null)}>
+                Close
+              </button>
+            </div>
+            {previewRow.assetType === "video" ? (
+              <video
+                src={previewRow.assetDataUrl || previewRow.imageDataUrl}
+                className="max-h-[70vh] w-full rounded-xl bg-black"
+                controls
+                autoPlay
+                playsInline
+                preload="metadata"
+              />
+            ) : (
+              <img
+                src={previewRow.assetDataUrl || previewRow.imageDataUrl}
+                alt={previewRow.assetName || previewRow.imageName || "Uploaded creative"}
+                className="max-h-[70vh] w-full rounded-xl object-contain bg-slate-50"
+              />
+            )}
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }
