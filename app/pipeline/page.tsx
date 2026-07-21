@@ -135,6 +135,7 @@ const PIPELINE_STEPS = [
   "Schedule to Metricool"
 ];
 const METRICOOL_TEXT_LIMIT = 500;
+const RENDER_RETRY_DELAYS_MS = [2000, 5000];
 
 function inferImageExtension(contentType: string | null): string {
   switch ((contentType ?? "").toLowerCase()) {
@@ -147,6 +148,15 @@ function inferImageExtension(contentType: string | null): string {
     default:
       return "jpg";
   }
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isRetryableRenderError(error: unknown): boolean {
+  const meta = getErrorMeta(error);
+  return meta.code === "RENDER_TIMEOUT" || meta.retryable || (meta.status !== undefined && meta.status >= 500);
 }
 
 function normalizeForMatch(value: string): string {
@@ -795,12 +805,33 @@ Context:
         setProductStep(product.id, 0, "done");
 
         setProductStep(product.id, 1, "running");
-        const renderResponse = await http.post("/api/v1/renderform/render", {
-          template: selectedTemplateId,
-          titleText: basePostPackage.Image_editing_text,
-          imageSrc: product.imageUrl,
-          extraData: {}
-        });
+        let renderResponse;
+        for (let attempt = 0; attempt < RENDER_RETRY_DELAYS_MS.length + 1; attempt += 1) {
+          try {
+            renderResponse = await http.post("/api/v1/renderform/render", {
+              template: selectedTemplateId,
+              titleText: basePostPackage.Image_editing_text,
+              imageSrc: product.imageUrl,
+              extraData: {}
+            });
+            break;
+          } catch (error) {
+            const isFinalAttempt = attempt >= RENDER_RETRY_DELAYS_MS.length;
+            if (!isRetryableRenderError(error) || isFinalAttempt) {
+              throw error;
+            }
+            const delayMs = RENDER_RETRY_DELAYS_MS[attempt];
+            const errorMessage = getErrorMeta(error).message;
+            pushLog(
+              "warn",
+              `[${product.product}] image editing attempt ${attempt + 1} failed: ${errorMessage}. Retrying ${attempt + 2}/3 in ${Math.round(delayMs / 1000)}s`
+            );
+            await wait(delayMs);
+          }
+        }
+        if (!renderResponse) {
+          throw new Error("Render response was not returned.");
+        }
         const renderData = unwrapEnvelope<{ href: string }>(renderResponse.data);
         setProductStep(product.id, 1, "done");
         pushLog("ok", `[${product.product}] image rendered`);
