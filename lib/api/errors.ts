@@ -38,6 +38,10 @@ export function getDisplayMessage(error: unknown): string {
   return normalized.message || "Request failed";
 }
 
+// Gateway/timeout failures are transient by nature. Filtered+sorted catalog queries run
+// close to the upstream timeout, so these surface as 502s that succeed on a retry.
+const TRANSIENT_STATUSES = new Set([502, 503, 504]);
+
 export function getErrorMeta(error: unknown): {
   message: string;
   code?: string;
@@ -46,10 +50,13 @@ export function getErrorMeta(error: unknown): {
   status?: number;
 } {
   const normalized = normalizeApiError(error);
+  const retryable =
+    normalized.retryable ??
+    (normalized.status !== undefined && TRANSIENT_STATUSES.has(normalized.status));
   return {
     message: getDisplayMessage(normalized),
     code: normalized.code,
-    retryable: Boolean(normalized.retryable),
+    retryable: Boolean(retryable),
     step: normalized.step,
     status: normalized.status
   };
