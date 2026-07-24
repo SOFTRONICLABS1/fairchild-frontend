@@ -10,6 +10,7 @@ import { generateJson } from "@/lib/ai/generate";
 import DealsPanel from "@/components/search/deals-panel";
 import MultiSelectChips from "@/components/search/multi-select-chips";
 import { usePlatformOptions } from "@/lib/search/use-platform-options";
+import { preloadWordPressCategories } from "@/lib/wordpress/categories";
 import {
   writeSelectionParam,
   BROWSE_SUGGESTIONS,
@@ -79,6 +80,10 @@ export default function AffiliateSearchPage() {
     };
     setSelectedCjAdvertiserIds(readList("search:cj-advertiser-ids", "search:cj-advertiser-id"));
     setSelectedImpactCampaigns(readList("search:impact-campaigns", "search:impact-campaign"));
+  }, []);
+
+  useEffect(() => {
+    preloadWordPressCategories();
   }, []);
 
   useEffect(() => {
