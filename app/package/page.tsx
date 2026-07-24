@@ -7,6 +7,7 @@ import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getDisplayMessage } from "@/lib/api/errors";
+import { generateJson } from "@/lib/ai/generate";
 
 type SelectedProduct = {
   id: string;
@@ -54,7 +55,6 @@ type WordPressCategoryOption = {
   name: string;
 };
 
-const AI_MODELS = ["claude-sonnet-4-5"];
 const WORDPRESS_CATEGORY_PAGE_SIZE = 100;
 const WORDPRESS_CATEGORY_FETCH_CONCURRENCY = 5;
 
@@ -469,29 +469,18 @@ Rules:
 ${mode === "force_variation" ? "- If multiple categories are plausible, choose a different valid option than the last one." : ""}
     `.trim();
 
-    const response = await http.post("/api/v1/claude/generate", {
-      prompt,
-      modelCandidates: AI_MODELS,
-      maxTokens: 300,
-      temperature: 0.4
-    });
-
-    const data = unwrapEnvelope<unknown>(response.data);
-    let rawText = "";
-    if (typeof data === "string") {
-      rawText = data;
-    } else if (data && typeof data === "object") {
-      const candidate =
-        (data as Record<string, unknown>).text ??
-        (data as Record<string, unknown>).output ??
-        (data as Record<string, unknown>).content ??
-        (data as Record<string, unknown>).response;
-      rawText = typeof candidate === "string" ? candidate : JSON.stringify(candidate ?? data);
+    let parsed: { categoryId?: unknown; categoryName?: unknown };
+    try {
+      parsed = await generateJson<{ categoryId?: unknown; categoryName?: unknown }>({
+        prompt,
+        maxTokens: 512,
+        temperature: 0.4
+      });
+    } catch {
+      // Category selection is best-effort; fall back to the deterministic keyword match
+      // rather than failing the whole regenerate.
+      return deterministicMatch;
     }
-
-    const jsonText = extractJsonObject(rawText);
-    if (!jsonText) return deterministicMatch;
-    const parsed = JSON.parse(jsonText) as { categoryId?: unknown; categoryName?: unknown };
     const categoryId = Number(parsed.categoryId);
     const categoryName = typeof parsed.categoryName === "string" ? parsed.categoryName.trim() : "";
 
@@ -522,12 +511,6 @@ ${mode === "force_variation" ? "- If multiple categories are plausible, choose a
     setRegeneratingFields((prev) => ({ ...prev, [stateKey]: value }));
   };
 
-  const extractJsonObject = (value: string): string | null => {
-    const first = value.indexOf("{");
-    const last = value.lastIndexOf("}");
-    if (first < 0 || last < 0 || last <= first) return null;
-    return value.slice(first, last + 1);
-  };
 
   const generateFieldsWithAI = async (
     product: SelectedProduct,
@@ -574,29 +557,12 @@ Rules:
 ${mode === "force_variation" ? "- Generate a clearly different variation than the previous value for each requested key." : ""}
 `.trim();
 
-    const response = await http.post("/api/v1/claude/generate", {
+    const parsed = await generateJson<AIPackageFields>({
       prompt,
-      modelCandidates: AI_MODELS,
-      maxTokens: 500,
-      temperature: 0.7
+      // Wide enough for all 6 fields so valid JSON can't truncate mid-object.
+      maxTokens: 1024,
+      temperature: 0.2
     });
-
-    const data = unwrapEnvelope<unknown>(response.data);
-    let rawText = "";
-    if (typeof data === "string") {
-      rawText = data;
-    } else if (data && typeof data === "object") {
-      const candidate =
-        (data as Record<string, unknown>).text ??
-        (data as Record<string, unknown>).output ??
-        (data as Record<string, unknown>).content ??
-        (data as Record<string, unknown>).response;
-      rawText = typeof candidate === "string" ? candidate : JSON.stringify(candidate ?? data);
-    }
-
-    const jsonText = extractJsonObject(rawText);
-    if (!jsonText) throw new Error("AI did not return valid JSON");
-    const parsed = JSON.parse(jsonText) as AIPackageFields;
 
     if (parsed.name) parsed.name = normalizeName(parsed.name);
     if (parsed.Image_editing_text) parsed.Image_editing_text = parsed.Image_editing_text.trim().split(/\s+/).slice(0, 3).join(" ");
@@ -784,48 +750,65 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
             categories = [];
           }
         }
+        const failedProducts: string[] = [];
         for (let index = 0; index < products.length; index += 1) {
           setInitialGeneratingIndex(index);
           const product = products[index];
           const current = nextPackages[index];
           if (!product || !current) continue;
-          const generated = await generateFieldsWithAI(product, current, [
-            "Image_editing_text",
-            "name",
-            "description",
-            "short_description",
-            "button_text",
-            "metricool_schedule_datetime"
-          ]);
-          const categoryContext = {
-            ...current,
-            Image_editing_text: generated.Image_editing_text ?? current.Image_editing_text,
-            name: generated.name ?? current.name,
-            description: generated.description ?? current.description,
-            short_description: generated.short_description ?? current.short_description,
-            button_text: generated.button_text ?? current.button_text,
-            metricool_schedule_datetime: generated.metricool_schedule_datetime ?? current.metricool_schedule_datetime
-          };
-          const selectedCategory =
-            current.wordpress_category ??
-            (categories.length > 0
-              ? await selectCategoryWithAI(product, categoryContext, categories)
-              : null);
-          nextPackages[index] = {
-            ...current,
-            Image_editing_text: generated.Image_editing_text ?? current.Image_editing_text,
-            name: generated.name ?? current.name,
-            description: generated.description ?? current.description,
-            short_description: generated.short_description ?? current.short_description,
-            button_text: generated.button_text ?? current.button_text,
-            metricool_schedule_datetime: generated.metricool_schedule_datetime ?? current.metricool_schedule_datetime,
-            wordpress_category: selectedCategory ?? current.wordpress_category
-          };
+          // Isolate each product: one product's AI/parse failure must not abort generation
+          // for the rest, and must not leave its fields stuck on "Generating…" forever.
+          try {
+            const generated = await generateFieldsWithAI(product, current, [
+              "Image_editing_text",
+              "name",
+              "description",
+              "short_description",
+              "button_text",
+              "metricool_schedule_datetime"
+            ]);
+            const categoryContext = {
+              ...current,
+              Image_editing_text: generated.Image_editing_text ?? current.Image_editing_text,
+              name: generated.name ?? current.name,
+              description: generated.description ?? current.description,
+              short_description: generated.short_description ?? current.short_description,
+              button_text: generated.button_text ?? current.button_text,
+              metricool_schedule_datetime: generated.metricool_schedule_datetime ?? current.metricool_schedule_datetime
+            };
+            const selectedCategory =
+              current.wordpress_category ??
+              (categories.length > 0
+                ? await selectCategoryWithAI(product, categoryContext, categories)
+                : null);
+            nextPackages[index] = {
+              ...current,
+              Image_editing_text: generated.Image_editing_text ?? current.Image_editing_text,
+              name: generated.name ?? current.name,
+              description: generated.description ?? current.description,
+              short_description: generated.short_description ?? current.short_description,
+              button_text: generated.button_text ?? current.button_text,
+              metricool_schedule_datetime: generated.metricool_schedule_datetime ?? current.metricool_schedule_datetime,
+              wordpress_category: selectedCategory ?? current.wordpress_category
+            };
+          } catch (error) {
+            // Keep the base (non-AI) values already in nextPackages[index]; the user can
+            // Regenerate individual fields. Never block the whole batch on one product.
+            console.error(`[package] AI generation failed for "${product.product}"`, error);
+            failedProducts.push(product.product);
+          }
+          // Unblock this product's editor regardless of success, so its fields stop showing
+          // "Generating…" — a failed product shows its base details, retryable per field.
           nextReady[product.id] = true;
         }
         setPackages(nextPackages);
         setAiReadyByProduct((prev) => ({ ...prev, ...nextReady }));
         sessionStorage.setItem("pipeline:post-packages", JSON.stringify(nextPackages));
+        if (failedProducts.length > 0) {
+          setAiError(
+            `AI content couldn't be generated for ${failedProducts.length} product(s). Their base details are shown — use Regenerate to retry.`
+          );
+        }
       } catch (error) {
         setAiError(getDisplayMessage(error) || "Failed to generate package content");
       } finally {

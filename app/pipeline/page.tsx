@@ -4,6 +4,7 @@ import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getErrorMeta } from "@/lib/api/errors";
+import { generateJson } from "@/lib/ai/generate";
 
 type SelectedProduct = {
   id: string;
@@ -14,6 +15,7 @@ type SelectedProduct = {
   platform: "CJ" | "Impact";
   price: number;
   discount: number;
+  imageCandidates?: string[];
 };
 
 type StoredPipelineProduct = SelectedProduct & {
@@ -28,7 +30,17 @@ type RenderformTemplate = {
 
 type OptionKey = "wordpress" | "metricool" | "gpt" | "imageEdit";
 type StepState = "waiting" | "running" | "done" | "failed";
-type ProductRunState = "waiting" | "running" | "done" | "failed";
+type ProductRunState = "waiting" | "running" | "retrying" | "done" | "failed";
+
+type ProductRunData = {
+  imageUrl?: string;
+  renderHref?: string;
+  mediaId?: number;
+  wpProductId?: string | number;
+  wpPermalink?: string;
+  wpPosted?: boolean;
+  listedAsCreated?: boolean;
+};
 
 type PostPackage = {
   Image_editing_text: string;
@@ -135,7 +147,15 @@ const PIPELINE_STEPS = [
   "Schedule to Metricool"
 ];
 const METRICOOL_TEXT_LIMIT = 500;
-const RENDER_RETRY_DELAYS_MS = [2000, 5000];
+const RENDER_RETRY_DELAYS_MS = [2000, 5000, 12000];
+// Automatic internal per-product retry (resumes from the failed step instead of
+// re-running the whole product) so a transient failure never surfaces to the user
+// if simply re-attempting would have worked — mirrors "run the same flow again".
+const PRODUCT_RETRY_DELAYS_MS = [2000, 5000, 12000];
+// Last-resort image when a product's source image (and all its candidates) are
+// unreachable during pre-flight. Guarantees the render/publish step still completes
+// instead of dropping the product from the run.
+const PLACEHOLDER_IMAGE_URL = "https://placehold.co/800x800/eeeeee/999999.png?text=Image+Unavailable";
 
 function inferImageExtension(contentType: string | null): string {
   switch ((contentType ?? "").toLowerCase()) {
@@ -157,6 +177,49 @@ function wait(ms: number) {
 function isRetryableRenderError(error: unknown): boolean {
   const meta = getErrorMeta(error);
   return meta.code === "RENDER_TIMEOUT" || meta.retryable || (meta.status !== undefined && meta.status >= 500);
+}
+
+async function checkImageUrlHealth(url: string): Promise<boolean> {
+  if (!url) return false;
+  try {
+    const response = await fetch(`/api/url-health?url=${encodeURIComponent(url)}`);
+    const payload = (await response.json()) as { ok?: boolean };
+    return payload.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pre-flight: verify every selected product's source image is reachable before the run
+ * starts. A dead image is never dropped from the run — it is repaired in place by trying
+ * carried alternate images (imageCandidates), then falling back to a bundled placeholder
+ * so the render/publish step always has something valid to work with.
+ */
+async function validateAndRepairImages(
+  products: StoredPipelineProduct[],
+  onRepair: (product: StoredPipelineProduct, source: "candidate" | "placeholder") => void
+): Promise<StoredPipelineProduct[]> {
+  const repaired = await Promise.all(
+    products.map(async (product): Promise<StoredPipelineProduct> => {
+      const primaryOk = await checkImageUrlHealth(product.imageUrl);
+      if (primaryOk) return product;
+
+      const candidates = (product.imageCandidates ?? []).filter((url) => url && url !== product.imageUrl);
+      for (const candidate of candidates) {
+        // eslint-disable-next-line no-await-in-loop
+        const candidateOk = await checkImageUrlHealth(candidate);
+        if (candidateOk) {
+          onRepair(product, "candidate");
+          return { ...product, imageUrl: candidate };
+        }
+      }
+
+      onRepair(product, "placeholder");
+      return { ...product, imageUrl: PLACEHOLDER_IMAGE_URL };
+    })
+  );
+  return repaired;
 }
 
 function normalizeForMatch(value: string): string {
@@ -374,7 +437,14 @@ export default function PipelinePage() {
   const [createdWpProducts, setCreatedWpProducts] = useState<Array<{ productId: string | number; mediaId: number; productName: string }>>([]);
   const [logLines, setLogLines] = useState<Array<{ tone: "info" | "ok" | "warn" | "err"; text: string }>>([]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [productRetryCount, setProductRetryCount] = useState<Record<string, number>>({});
+  const [preflightRunning, setPreflightRunning] = useState(false);
   const recentHashtagSetsRef = useRef<string[][]>([]);
+  const pinterestBoardsRef = useRef<PinterestBoard[]>([]);
+  // Per-product progress (rendered image href, uploaded WP media id, created WP post id).
+  // Preserved across an internal auto-retry so resuming a failed product never re-runs an
+  // already-completed step — critical because WP post creation is not idempotent.
+  const productRunDataRef = useRef<Record<string, ProductRunData>>({});
   const [options, setOptions] = useState<Record<OptionKey, boolean>>({
     wordpress: true,
     metricool: true,
@@ -610,34 +680,15 @@ Context:
 }
 `.trim();
 
-      const response = await http.post("/api/v1/claude/generate", {
-        prompt,
-        modelCandidates: ["claude-sonnet-4-5"],
-        maxTokens: 300,
-        temperature: 0.85
-      });
-
-      const data = unwrapEnvelope<unknown>(response.data);
-      const rawText =
-        typeof data === "string"
-          ? data
-          : JSON.stringify(
-              (data as Record<string, unknown>)?.text ??
-              (data as Record<string, unknown>)?.output ??
-              (data as Record<string, unknown>)?.content ??
-              (data as Record<string, unknown>)?.response ??
-              data
-            );
-      const first = rawText.indexOf("{");
-      const last = rawText.lastIndexOf("}");
-      if (first < 0 || last < 0 || last <= first) {
-        return null;
-      }
-
       try {
-        const parsed = JSON.parse(rawText.slice(first, last + 1)) as { text?: string };
+        const parsed = await generateJson<{ text?: string }>({
+          prompt,
+          maxTokens: 512,
+          temperature: 0.85
+        });
         return parsed.text?.trim() ?? null;
       } catch {
+        // Caption AI is best-effort; caller falls back to a templated caption.
         return null;
       }
     };
@@ -753,13 +804,221 @@ Context:
     };
   };
 
+  // Single, non-retrying attempt at a product's full flow. Resumes from whatever step
+  // productRunDataRef already has cached, so re-invoking this after a failure never
+  // re-renders an image or re-creates a WordPress post that already succeeded.
+  const attemptProductOnce = async (
+    product: StoredPipelineProduct,
+    basePostPackage: PostPackage,
+    pinterestBoards: PinterestBoard[]
+  ): Promise<void> => {
+    const runData: ProductRunData = productRunDataRef.current[product.id] ?? {};
+    productRunDataRef.current[product.id] = runData;
+
+    setProductStep(product.id, 0, "running");
+    await Promise.resolve();
+    setProductStep(product.id, 0, "done");
+
+    setProductStep(product.id, 1, "running");
+    let renderHref = runData.renderHref;
+    if (!renderHref) {
+      let renderResponse;
+      for (let attempt = 0; attempt < RENDER_RETRY_DELAYS_MS.length + 1; attempt += 1) {
+        try {
+          renderResponse = await http.post("/api/v1/renderform/render", {
+            template: selectedTemplateId,
+            titleText: basePostPackage.Image_editing_text,
+            imageSrc: product.imageUrl,
+            extraData: {}
+          });
+          break;
+        } catch (error) {
+          const isFinalAttempt = attempt >= RENDER_RETRY_DELAYS_MS.length;
+          if (!isRetryableRenderError(error) || isFinalAttempt) {
+            throw error;
+          }
+          const delayMs = RENDER_RETRY_DELAYS_MS[attempt];
+          const errorMessage = getErrorMeta(error).message;
+          pushLog(
+            "warn",
+            `[${product.product}] image editing attempt ${attempt + 1} failed: ${errorMessage}. Retrying ${attempt + 2}/${RENDER_RETRY_DELAYS_MS.length + 1} in ${Math.round(delayMs / 1000)}s`
+          );
+          await wait(delayMs);
+        }
+      }
+      if (!renderResponse) {
+        throw new Error("Render response was not returned.");
+      }
+      const renderData = unwrapEnvelope<{ href: string }>(renderResponse.data);
+      renderHref = renderData.href;
+      runData.renderHref = renderHref;
+    }
+    setProductStep(product.id, 1, "done");
+    pushLog("ok", `[${product.product}] image rendered`);
+
+    setProductStep(product.id, 2, "running");
+    let mediaId = runData.mediaId;
+    let wpProductId = runData.wpProductId;
+    let wpPermalink = runData.wpPermalink ?? "";
+    if (!runData.wpPosted) {
+      const mediaForm = new FormData();
+      mediaForm.append("file", new Blob([]), "");
+      mediaForm.append("image_url", renderHref);
+      const mediaUploadResponse = await http.post("/api/v1/wordpress/media/upload", mediaForm, {
+        headers: {
+          "Content-Type": "multipart/form-data"
+        }
+      });
+      const mediaUploadData = unwrapEnvelope<{ id: number; guid?: { rendered?: string }; permalink_template?: string }>(mediaUploadResponse.data);
+
+      const postPackagePayload = buildWordPressProductPayload(basePostPackage, mediaUploadData.id);
+
+      const productCreateResponse = await http.post("/api/v1/wordpress/products", postPackagePayload);
+      const wpProductData = unwrapEnvelope<{ id?: string | number; permalink?: string }>(productCreateResponse.data);
+
+      mediaId = mediaUploadData.id;
+      wpProductId = wpProductData.id ?? "N/A";
+      wpPermalink = wpProductData.permalink ?? "";
+      runData.mediaId = mediaId;
+      runData.wpProductId = wpProductId;
+      runData.wpPermalink = wpPermalink;
+      runData.wpPosted = true;
+    }
+    setProductStep(product.id, 2, "done");
+    pushLog("ok", `[${product.product}] wordpress product created`);
+
+    setProductStep(product.id, 3, "running");
+    if (options.metricool) {
+      pushLog("info", `[${product.product}] fetching rendered image for Metricool upload`);
+      const renderImageResponse = await fetch(renderHref);
+      if (!renderImageResponse.ok) {
+        throw new Error(`Failed to fetch rendered image for Metricool upload (${renderImageResponse.status})`);
+      }
+      const renderImageContentType = renderImageResponse.headers.get("content-type");
+      if (!renderImageContentType?.startsWith("image/")) {
+        throw new Error("Rendered asset is not a valid image for Metricool upload.");
+      }
+      const renderImageBlob = await renderImageResponse.blob();
+      pushLog("ok", `[${product.product}] rendered image fetched`);
+
+      const metricoolUploadForm = new FormData();
+      metricoolUploadForm.append(
+        "picture",
+        renderImageBlob,
+        `metricool-${product.id}.${inferImageExtension(renderImageContentType)}`
+      );
+      const metricoolUploadResponse = await http.post(
+        "/api/v1/metricool/upload",
+        metricoolUploadForm,
+        {
+          params: { userId: "1981059", blogId: "3410405" },
+          headers: {
+            "Content-Type": "multipart/form-data"
+          }
+        }
+      );
+      const metricoolUploadData = unwrapEnvelope<MetricoolUploadResponse>(metricoolUploadResponse.data);
+      const mediaUrl = metricoolUploadData.raw_text?.trim() ?? "";
+      if (!mediaUrl) {
+        pushLog("err", `[${product.product}] Metricool upload failed: no hosted media URL returned`);
+        throw new Error("Metricool upload did not return a hosted media URL.");
+      }
+      pushLog("ok", `[${product.product}] Metricool media uploaded`);
+      const metricoolText = await generateMetricoolText(product, basePostPackage, wpPermalink);
+      const boardMatch = pickBestPinterestBoard(product.product, product.companyName, pinterestBoards);
+      if (!boardMatch) {
+        throw new Error("No Pinterest boards available to post.");
+      }
+      if (boardMatch.reason === "fallback") {
+        pushLog("warn", `[${product.product}] Pinterest board fallback used: ${boardMatch.board.name} (${boardMatch.board.id})`);
+      } else {
+        pushLog("ok", `[${product.product}] Pinterest board matched by ${boardMatch.reason}: ${boardMatch.board.name} (${boardMatch.board.id})`);
+      }
+      const metricoolPayload = buildMetricoolPayload(
+        mediaUrl,
+        metricoolText,
+        basePostPackage.metricool_schedule_datetime,
+        basePostPackage.metricool_status,
+        boardMatch.board.id,
+        basePostPackage.name,
+        wpPermalink
+      );
+      await http.post(
+        "/api/v1/metricool/scheduler/posts",
+        metricoolPayload,
+        { params: { userId: "1981059", blogId: "3410405" } }
+      );
+    }
+    setProductStep(product.id, 3, "done");
+    setProductState(product.id, "done");
+    if (!runData.listedAsCreated) {
+      runData.listedAsCreated = true;
+      setCreatedWpProducts((prev) => [...prev, { productId: wpProductId ?? "N/A", mediaId: mediaId ?? 0, productName: product.product }]);
+    }
+    pushLog("ok", `[${product.product}] completed`);
+  };
+
+  // Runs one product to completion, automatically re-attempting internally (resuming from
+  // whatever step already succeeded) before ever surfacing a failure — mirroring what
+  // manually re-running the same flow already fixes today. Never throws: the batch loop
+  // keeps going regardless of this product's outcome.
+  const processProduct = async (
+    product: StoredPipelineProduct,
+    basePostPackage: PostPackage,
+    pinterestBoards: PinterestBoard[]
+  ): Promise<boolean> => {
+    resetProductSteps(product.id);
+    setProductState(product.id, "running");
+    setProductRetryCount((prev) => ({ ...prev, [product.id]: 0 }));
+    setAccordionOpen((prev) => ({ ...prev, [product.id]: true }));
+    setCurrentProductLabel(product.product);
+    pushLog("info", `[${product.product}] starting`);
+
+    const maxAttempts = PRODUCT_RETRY_DELAYS_MS.length + 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        if (attempt > 0) {
+          setProductState(product.id, "retrying");
+          setProductRetryCount((prev) => ({ ...prev, [product.id]: attempt }));
+          pushLog("info", `[${product.product}] auto-retrying (attempt ${attempt + 1}/${maxAttempts})`);
+        }
+        await attemptProductOnce(product, basePostPackage, pinterestBoards);
+        return true;
+      } catch (error) {
+        const meta = getErrorMeta(error);
+        const isFinalAttempt = attempt >= maxAttempts - 1;
+        if (!isFinalAttempt) {
+          const delayMs = PRODUCT_RETRY_DELAYS_MS[attempt];
+          pushLog(
+            "warn",
+            `[${product.product}] attempt ${attempt + 1} failed${meta.code ? ` (${meta.code})` : ""}: ${meta.message}. Retrying in ${Math.round(delayMs / 1000)}s`
+          );
+          await wait(delayMs);
+          continue;
+        }
+        setProductState(product.id, "failed");
+        setProductStepStates((prev) => {
+          const current = prev[product.id] ?? ["waiting", "waiting", "waiting", "waiting"];
+          const next = current.map((step) => (step === "running" ? "failed" : step)) as StepState[];
+          return { ...prev, [product.id]: next };
+        });
+        const message = meta.message || "Pipeline failed";
+        pushLog(
+          "err",
+          `[${product.product}] failed${meta.step ? ` at ${meta.step}` : ""}${meta.code ? ` (${meta.code})` : ""} after ${maxAttempts} attempts: ${message}`
+        );
+        return false;
+      }
+    }
+    return false;
+  };
+
   const runPipeline = async () => {
     if (!selectedTemplateId) {
       setPipelineError("Please select a template");
       return;
     }
-    const readyProducts = selectedProducts.filter((product) => productReady[product.id]);
-    const storedPackagesById = getStoredPackagesByProductId(selectedProducts as StoredPipelineProduct[]);
+    let readyProducts = selectedProducts.filter((product) => productReady[product.id]);
     if (readyProducts.length === 0) {
       setPipelineError("Mark at least one product as Ready");
       return;
@@ -773,7 +1032,32 @@ Context:
     setCreatedWpProducts([]);
     setLogLines([]);
     recentHashtagSetsRef.current = [];
+    productRunDataRef.current = {};
     pushLog("info", `Pipeline started for ${readyProducts.length} products`);
+
+    setPreflightRunning(true);
+    pushLog("info", "Validating source images before starting...");
+    readyProducts = await validateAndRepairImages(readyProducts, (product, source) => {
+      const message =
+        source === "candidate"
+          ? `[${product.product}] source image was unreachable — switched to an alternate image`
+          : `[${product.product}] source image (and alternates) were unreachable — using a placeholder so this product still completes`;
+      pushLog("warn", message);
+    });
+    setPreflightRunning(false);
+    // Persist repairs so the row image + a reload/resume reflect the fixed URL, and so no
+    // selected product is ever silently dropped.
+    setSelectedProducts((prev) =>
+      prev.map((product) => readyProducts.find((repaired) => repaired.id === product.id) ?? product)
+    );
+    try {
+      sessionStorage.setItem(
+        "pipeline:selected-products",
+        JSON.stringify(selectedProducts.map((product) => readyProducts.find((repaired) => repaired.id === product.id) ?? product))
+      );
+    } catch {
+      // best-effort persistence only
+    }
 
     let pinterestBoards: PinterestBoard[] = [];
     try {
@@ -782,168 +1066,92 @@ Context:
       });
       const boardsData = unwrapEnvelope<{ data?: PinterestBoard[] }>(boardsResponse.data);
       pinterestBoards = boardsData?.data ?? [];
+      pinterestBoardsRef.current = pinterestBoards;
       pushLog("ok", `Pinterest boards fetched: ${pinterestBoards.length}`);
     } catch (error) {
       const message = getErrorMeta(error).message || "Failed to fetch Pinterest boards";
       pushLog("warn", `Pinterest boards fetch failed, continuing with no boards: ${message}`);
     }
 
+    const storedPackagesById = getStoredPackagesByProductId(readyProducts);
+    let succeededCount = 0;
+    let failedCount = 0;
     for (const product of readyProducts) {
-      resetProductSteps(product.id);
-      setProductState(product.id, "running");
-      setAccordionOpen((prev) => ({ ...prev, [product.id]: true }));
-      setCurrentProductLabel(product.product);
-      pushLog("info", `[${product.product}] starting`);
       const basePostPackage = storedPackagesById[product.id] ?? createBasePostPackage(product);
       if (product.productUrl) {
         basePostPackage.external_url = product.productUrl;
       }
-
-      try {
-        setProductStep(product.id, 0, "running");
-        await Promise.resolve();
-        setProductStep(product.id, 0, "done");
-
-        setProductStep(product.id, 1, "running");
-        let renderResponse;
-        for (let attempt = 0; attempt < RENDER_RETRY_DELAYS_MS.length + 1; attempt += 1) {
-          try {
-            renderResponse = await http.post("/api/v1/renderform/render", {
-              template: selectedTemplateId,
-              titleText: basePostPackage.Image_editing_text,
-              imageSrc: product.imageUrl,
-              extraData: {}
-            });
-            break;
-          } catch (error) {
-            const isFinalAttempt = attempt >= RENDER_RETRY_DELAYS_MS.length;
-            if (!isRetryableRenderError(error) || isFinalAttempt) {
-              throw error;
-            }
-            const delayMs = RENDER_RETRY_DELAYS_MS[attempt];
-            const errorMessage = getErrorMeta(error).message;
-            pushLog(
-              "warn",
-              `[${product.product}] image editing attempt ${attempt + 1} failed: ${errorMessage}. Retrying ${attempt + 2}/3 in ${Math.round(delayMs / 1000)}s`
-            );
-            await wait(delayMs);
-          }
-        }
-        if (!renderResponse) {
-          throw new Error("Render response was not returned.");
-        }
-        const renderData = unwrapEnvelope<{ href: string }>(renderResponse.data);
-        setProductStep(product.id, 1, "done");
-        pushLog("ok", `[${product.product}] image rendered`);
-
-        setProductStep(product.id, 2, "running");
-        const mediaForm = new FormData();
-        mediaForm.append("file", new Blob([]), "");
-        mediaForm.append("image_url", renderData.href);
-        const mediaUploadResponse = await http.post("/api/v1/wordpress/media/upload", mediaForm, {
-          headers: {
-            "Content-Type": "multipart/form-data"
-          }
-        });
-        const mediaUploadData = unwrapEnvelope<{ id: number; guid?: { rendered?: string }; permalink_template?: string }>(mediaUploadResponse.data);
-
-        const postPackagePayload = buildWordPressProductPayload(basePostPackage, mediaUploadData.id);
-
-        const productCreateResponse = await http.post("/api/v1/wordpress/products", postPackagePayload);
-        const wpProductData = unwrapEnvelope<{ id?: string | number; permalink?: string }>(productCreateResponse.data);
-        setProductStep(product.id, 2, "done");
-        pushLog("ok", `[${product.product}] wordpress product created`);
-
-        setProductStep(product.id, 3, "running");
-        if (options.metricool) {
-          pushLog("info", `[${product.product}] fetching rendered image for Metricool upload`);
-          const renderImageResponse = await fetch(renderData.href);
-          if (!renderImageResponse.ok) {
-            throw new Error(`Failed to fetch rendered image for Metricool upload (${renderImageResponse.status})`);
-          }
-          const renderImageContentType = renderImageResponse.headers.get("content-type");
-          if (!renderImageContentType?.startsWith("image/")) {
-            throw new Error("Rendered asset is not a valid image for Metricool upload.");
-          }
-          const renderImageBlob = await renderImageResponse.blob();
-          pushLog("ok", `[${product.product}] rendered image fetched`);
-
-          const metricoolUploadForm = new FormData();
-          metricoolUploadForm.append(
-            "picture",
-            renderImageBlob,
-            `metricool-${product.id}.${inferImageExtension(renderImageContentType)}`
-          );
-          const metricoolUploadResponse = await http.post(
-            "/api/v1/metricool/upload",
-            metricoolUploadForm,
-            {
-              params: { userId: "1981059", blogId: "3410405" },
-              headers: {
-                "Content-Type": "multipart/form-data"
-              }
-            }
-          );
-          const metricoolUploadData = unwrapEnvelope<MetricoolUploadResponse>(metricoolUploadResponse.data);
-          const mediaUrl = metricoolUploadData.raw_text?.trim() ?? "";
-          if (!mediaUrl) {
-            pushLog("err", `[${product.product}] Metricool upload failed: no hosted media URL returned`);
-            throw new Error("Metricool upload did not return a hosted media URL.");
-          }
-          pushLog("ok", `[${product.product}] Metricool media uploaded`);
-          const wpPermalink = wpProductData.permalink ?? "";
-          const metricoolText = await generateMetricoolText(product, basePostPackage, wpPermalink);
-          const boardMatch = pickBestPinterestBoard(product.product, product.companyName, pinterestBoards);
-          if (!boardMatch) {
-            throw new Error("No Pinterest boards available to post.");
-          }
-          if (boardMatch.reason === "fallback") {
-            pushLog("warn", `[${product.product}] Pinterest board fallback used: ${boardMatch.board.name} (${boardMatch.board.id})`);
-          } else {
-            pushLog("ok", `[${product.product}] Pinterest board matched by ${boardMatch.reason}: ${boardMatch.board.name} (${boardMatch.board.id})`);
-          }
-          const metricoolPayload = buildMetricoolPayload(
-            mediaUrl,
-            metricoolText,
-            basePostPackage.metricool_schedule_datetime,
-            basePostPackage.metricool_status,
-            boardMatch.board.id,
-            basePostPackage.name,
-            wpPermalink
-          );
-          await http.post(
-            "/api/v1/metricool/scheduler/posts",
-            metricoolPayload,
-            { params: { userId: "1981059", blogId: "3410405" } }
-          );
-        }
-        setProductStep(product.id, 3, "done");
-        setProductState(product.id, "done");
-        setCreatedWpProducts((prev) => [...prev, { productId: wpProductData.id ?? "N/A", mediaId: mediaUploadData.id, productName: product.product }]);
-        pushLog("ok", `[${product.product}] completed`);
-      } catch (error) {
-        const meta = getErrorMeta(error);
-        setProductState(product.id, "failed");
-        setProductStepStates((prev) => {
-          const current = prev[product.id] ?? ["waiting", "waiting", "waiting", "waiting"];
-          const next = current.map((step) => (step === "running" ? "failed" : step)) as StepState[];
-          return { ...prev, [product.id]: next };
-        });
-        const message = meta.message || "Pipeline failed";
-        setPipelineError(message);
-        setPipelineRetryable(meta.retryable);
-        pushLog(
-          "err",
-          `[${product.product}] failed${meta.step ? ` at ${meta.step}` : ""}${meta.code ? ` (${meta.code})` : ""}: ${message}`
-        );
-        setPipelineRunning(false);
-        return;
-      }
+      // No abort here on purpose: one product's failure (after internal auto-retry is
+      // exhausted) must never stop the rest of the batch from running.
+      const ok = await processProduct(product, basePostPackage, pinterestBoards);
+      if (ok) succeededCount += 1;
+      else failedCount += 1;
     }
 
     setPipelineRunning(false);
-    setCurrentProductLabel("Completed");
-    pushLog("ok", "Pipeline completed successfully");
+    if (failedCount > 0) {
+      setPipelineError(`${succeededCount} completed, ${failedCount} failed. Use Retry on a failed product below.`);
+      setPipelineRetryable(true);
+      setCurrentProductLabel("Completed with errors");
+      pushLog("err", `Pipeline finished: ${succeededCount} completed, ${failedCount} failed`);
+    } else {
+      setCurrentProductLabel("Completed");
+      pushLog("ok", "Pipeline completed successfully");
+    }
+  };
+
+  // Retries only the given products (never re-posts ones that already succeeded), resuming
+  // each from whatever step productRunDataRef already has cached.
+  const retryProducts = async (productsToRetry: StoredPipelineProduct[]) => {
+    if (productsToRetry.length === 0) return;
+    setPipelineError(null);
+    setPipelineRunning(true);
+    const storedPackagesById = getStoredPackagesByProductId(selectedProducts);
+    let pinterestBoards = pinterestBoardsRef.current;
+    if (pinterestBoards.length === 0) {
+      try {
+        const boardsResponse = await http.get("/api/v1/metricool/scheduler/boards/pinterest", {
+          params: { userId: "1981059", blogId: "3410405" }
+        });
+        const boardsData = unwrapEnvelope<{ data?: PinterestBoard[] }>(boardsResponse.data);
+        pinterestBoards = boardsData?.data ?? [];
+        pinterestBoardsRef.current = pinterestBoards;
+      } catch {
+        // proceed with no boards; pickBestPinterestBoard will surface a clear error if needed
+      }
+    }
+
+    let succeededCount = 0;
+    let failedCount = 0;
+    for (const product of productsToRetry) {
+      const basePostPackage = storedPackagesById[product.id] ?? createBasePostPackage(product);
+      if (product.productUrl) {
+        basePostPackage.external_url = product.productUrl;
+      }
+      const ok = await processProduct(product, basePostPackage, pinterestBoards);
+      if (ok) succeededCount += 1;
+      else failedCount += 1;
+    }
+
+    setPipelineRunning(false);
+    if (failedCount > 0) {
+      setPipelineError(`${failedCount} product(s) still failing. Use Retry to try again.`);
+      setPipelineRetryable(true);
+    } else {
+      setPipelineError(null);
+      pushLog("ok", `Retry completed: ${succeededCount} product(s) fixed`);
+    }
+  };
+
+  const retryOneProduct = (productId: string) => {
+    const product = selectedProducts.find((item) => item.id === productId);
+    if (!product) return;
+    void retryProducts([product]);
+  };
+
+  const retryAllFailed = () => {
+    const failedProducts = selectedProducts.filter((product) => productStates[product.id] === "failed");
+    void retryProducts(failedProducts);
   };
 
   const statusBannerClass = !pipelineStarted
@@ -958,11 +1166,13 @@ Context:
   const statusTitle = !pipelineStarted ? "Ready to start" : pipelineRunning ? "Pipeline running" : pipelineError ? "Pipeline failed" : "Pipeline completed";
   const statusSub = !pipelineStarted
     ? `${readyCount} products queued · Review options and click Start pipeline`
-    : pipelineRunning
-      ? `Running for ${currentProductLabel}`
-      : pipelineError
-        ? pipelineError
-        : `Completed ${completedCount}/${selectedProducts.length} products`;
+    : preflightRunning
+      ? "Validating source images..."
+      : pipelineRunning
+        ? `Running for ${currentProductLabel}`
+        : pipelineError
+          ? pipelineError
+          : `Completed ${completedCount}/${selectedProducts.length} products`;
 
   return (
     <>
@@ -1030,7 +1240,23 @@ Context:
                     <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{product.product}</div>
                     <div style={{ fontSize: 12, color: "var(--text-3)" }}>{product.platform} · ${product.price.toFixed(2)}</div>
                   </div>
-                  <span className={`prod-status-pill ${state}`}>{state.charAt(0).toUpperCase() + state.slice(1)}</span>
+                  <span className={`prod-status-pill ${state === "retrying" ? "running" : state}`}>
+                    {state === "retrying"
+                      ? `Retrying… (${(productRetryCount[product.id] ?? 0) + 1}/${PRODUCT_RETRY_DELAYS_MS.length + 1})`
+                      : state.charAt(0).toUpperCase() + state.slice(1)}
+                  </span>
+                  {state === "failed" ? (
+                    <button
+                      className="btn btn-sm"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        retryOneProduct(product.id);
+                      }}
+                      disabled={pipelineRunning}
+                    >
+                      Retry
+                    </button>
+                  ) : null}
                   <span style={{ color: "var(--text-3)", fontSize: 12 }}>{isOpen ? "▼" : "▶"}</span>
                 </div>
                 {isOpen ? (
@@ -1050,6 +1276,14 @@ Context:
                           {createdWpProducts.find((item) => item.productName === product.product)?.productId ?? "N/A"}
                         </div>
                         <div>Template: {selectedTemplateName ?? selectedTemplateId ?? "N/A"}</div>
+                      </div>
+                    ) : null}
+                    {state === "failed" ? (
+                      <div className="result-card" style={{ borderColor: "var(--red)" }}>
+                        <div style={{ fontWeight: 600, color: "var(--red)" }}>
+                          ✗ Failed after {PRODUCT_RETRY_DELAYS_MS.length + 1} automatic attempts
+                        </div>
+                        <div>Click Retry above to try again — completed steps for this product are reused, so no duplicate WordPress post is created.</div>
                       </div>
                     ) : null}
                   </div>
@@ -1136,8 +1370,8 @@ Context:
           ) : null}
 
           {pipelineStarted && !pipelineRunning && pipelineError && pipelineRetryable ? (
-            <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => void runPipeline()}>
-              Retry failed run
+            <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={retryAllFailed}>
+              Retry all failed
             </button>
           ) : null}
 

@@ -7,8 +7,8 @@ import { useRouter } from "next/navigation";
 import AgencyLogoutButton from "@/components/agency/logout-button";
 import TopNav from "@/components/flow/top-nav";
 import AgencyStepper from "@/components/agency/stepper";
-import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getDisplayMessage } from "@/lib/api/errors";
+import { generateJson } from "@/lib/ai/generate";
 import { clearAgencyAuth, loadAgencyAuth } from "@/lib/agency/auth";
 import { fetchAgencyAssessmentPrompts } from "@/lib/agency/api";
 import { GOOGLE_ADS_ALL_LOCATIONS, GOOGLE_ADS_LOCATION_OPTIONS, normalizeTargetingLocations } from "@/lib/agency/google-ads-locations";
@@ -53,7 +53,6 @@ type GeneratedAgencyFields = {
   socialCta?: string;
 };
 
-const AI_MODELS = ["claude-sonnet-4-5"];
 
 function renderCreativePreview(pkg: AgencyPackage, className: string, compact = false) {
   if (pkg.assetType === "video") {
@@ -69,13 +68,6 @@ function renderCreativePreview(pkg: AgencyPackage, className: string, compact = 
     );
   }
   return <img src={pkg.assetDataUrl || pkg.imageDataUrl} alt={pkg.location} className={className} />;
-}
-
-function extractJsonObject(value: string): string | null {
-  const first = value.indexOf("{");
-  const last = value.lastIndexOf("}");
-  if (first < 0 || last < 0 || last <= first) return null;
-  return value.slice(first, last + 1);
 }
 
 function safeTextList(value: unknown, maxItems: number): string[] {
@@ -199,33 +191,11 @@ Rules:
 - mode: ${mode}
 `.trim();
 
-  const response = await http.post("/api/v1/claude/generate", {
+  const parsed = await generateJson<GeneratedAgencyFields>({
     prompt,
-    modelCandidates: AI_MODELS,
-    maxTokens: 700,
-    temperature: mode === "force_variation" ? 0.9 : 0.7
+    maxTokens: 1024,
+    temperature: mode === "force_variation" ? 0.9 : 0.4
   });
-
-  const data = unwrapEnvelope<unknown>(response.data);
-  let rawText = "";
-
-  if (typeof data === "string") {
-    rawText = data;
-  } else if (data && typeof data === "object") {
-    const candidate =
-      (data as Record<string, unknown>).text ??
-      (data as Record<string, unknown>).output ??
-      (data as Record<string, unknown>).content ??
-      (data as Record<string, unknown>).response;
-    rawText = typeof candidate === "string" ? candidate : JSON.stringify(candidate ?? data);
-  }
-
-  const jsonText = extractJsonObject(rawText);
-  if (!jsonText) {
-    throw new Error("AI response did not contain valid JSON");
-  }
-
-  const parsed = JSON.parse(jsonText) as GeneratedAgencyFields;
   return {
     campaignName: typeof parsed.campaignName === "string" ? parsed.campaignName.trim() : undefined,
     keywords: safeTextList(parsed.keywords, 6),
