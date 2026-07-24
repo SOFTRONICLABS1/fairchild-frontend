@@ -8,7 +8,7 @@ export type WordPressCategoryOption = {
 };
 
 const WORDPRESS_CATEGORY_PAGE_SIZE = 100;
-const WORDPRESS_CATEGORY_FETCH_CONCURRENCY = 5;
+const WORDPRESS_CATEGORY_FETCH_CONCURRENCY = 15;
 const WORDPRESS_CATEGORY_SESSION_KEY = "wordpress:categories-cache";
 
 let wordpressCategoryCache: WordPressCategoryOption[] | null = null;
