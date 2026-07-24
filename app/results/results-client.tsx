@@ -53,6 +53,8 @@ type ResultRow = {
   companyName: string;
   campaignId?: string;
   imageUrl: string;
+  /** Primary + alternate image URLs; the pipeline falls back through these if one is dead. */
+  imageCandidates: string[];
   productUrl: string;
   platform: "CJ" | "Impact";
   price: number;
@@ -69,6 +71,7 @@ type CjProduct = {
     clickUrl?: string;
   };
   imageLink: string;
+  additionalImageLink?: string | string[] | null;
   price?: { amount?: string | number | null } | null;
   salePrice?: { amount?: string | number | null } | null;
 };
@@ -81,10 +84,25 @@ type ImpactItem = {
   CampaignName?: string;
   Url?: string;
   ImageUrl: string;
+  AdditionalImageUrls?: string[] | string | null;
   IsParent?: boolean;
   CurrentPrice?: string | number | null;
   OriginalPrice?: string | number | null;
 };
+
+/** Builds a deduped list of usable https image URLs: primary first, then alternates. */
+function buildImageCandidates(primary: string, additional?: string[] | string | null): string[] {
+  const raw = [primary, ...(Array.isArray(additional) ? additional : additional ? [additional] : [])];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of raw) {
+    const url = String(value ?? "").trim();
+    if (!url || !/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  return out;
+}
 
 type ImpactPayload = {
   Items?: ImpactItem[];
@@ -291,6 +309,7 @@ async function fetchImpactPage(
       companyName: item.CampaignName ?? "",
       campaignId: item.CampaignId,
       imageUrl: item.ImageUrl,
+      imageCandidates: buildImageCandidates(item.ImageUrl, item.AdditionalImageUrls),
       productUrl: item.Url ?? "",
       platform: "Impact" as const,
       price: currentPrice,
@@ -337,6 +356,7 @@ async function fetchImpactCatalogByKeyword(
       companyName: item.CampaignName ?? "",
       campaignId: item.CampaignId,
       imageUrl: item.ImageUrl,
+      imageCandidates: buildImageCandidates(item.ImageUrl, item.AdditionalImageUrls),
       productUrl: item.Url ?? "",
       platform: "Impact" as const,
       price: currentPrice,
@@ -402,6 +422,9 @@ async function fetchCjPage(
       companyName: item.advertiserName ?? "",
       campaignId: undefined,
       imageUrl: item.imageLink,
+      // additionalImageLink is only present if the backend GraphQL selection adds it;
+      // absent today, so CJ rows carry just the primary and fall back to a placeholder.
+      imageCandidates: buildImageCandidates(item.imageLink, item.additionalImageLink),
       productUrl: item.linkCode?.clickUrl || item.link,
       platform: "CJ" as const,
       price,
@@ -1144,6 +1167,8 @@ export default function ResultsClientPage() {
       companyName: row.companyName,
       campaignId: row.campaignId,
       imageUrl: row.imageUrl,
+      // Carried so the pipeline can fall back through alternates if the primary image is dead.
+      imageCandidates: row.imageCandidates,
       productUrl: row.productUrl,
       platform: row.platform,
       price: row.price,

@@ -5,8 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
-import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getDisplayMessage } from "@/lib/api/errors";
+import { generateJson } from "@/lib/ai/generate";
 import DealsPanel from "@/components/search/deals-panel";
 import MultiSelectChips from "@/components/search/multi-select-chips";
 import { usePlatformOptions } from "@/lib/search/use-platform-options";
@@ -129,13 +129,6 @@ export default function AffiliateSearchPage() {
     goToResults({ ...intent, keyword: trimmed }, cj || (!cj && !impact), impact || (!cj && !impact));
   };
 
-  const extractJsonObject = (value: string): string | null => {
-    const first = value.indexOf("{");
-    const last = value.lastIndexOf("}");
-    if (first < 0 || last < 0 || last <= first) return null;
-    return value.slice(first, last + 1);
-  };
-
   const runAiSearch = async () => {
     const promptInput = aiQuery.trim();
     if (!promptInput) return;
@@ -192,30 +185,7 @@ Platform rules:
 User request: ${promptInput}
 `.trim();
 
-      const response = await http.post("/api/v1/claude/generate", {
-        prompt: contextPrompt,
-        modelCandidates: ["claude-sonnet-4-5"],
-        maxTokens: 500,
-        temperature: 0.7
-      });
-
-      const data = unwrapEnvelope<unknown>(response.data);
-      let rawText = "";
-
-      if (typeof data === "string") {
-        rawText = data;
-      } else if (data && typeof data === "object") {
-        const candidate =
-          (data as Record<string, unknown>).text ??
-          (data as Record<string, unknown>).output ??
-          (data as Record<string, unknown>).content ??
-          (data as Record<string, unknown>).response;
-        rawText = typeof candidate === "string" ? candidate : JSON.stringify(candidate ?? data);
-      }
-
-      const jsonText = extractJsonObject(rawText);
-      if (!jsonText) throw new Error("AI response did not contain valid JSON");
-      const parsed = JSON.parse(jsonText) as {
+      const parsed = await generateJson<{
         keyword?: string;
         alternateKeywords?: string[];
         platform?: string;
@@ -223,7 +193,11 @@ User request: ${promptInput}
         minDiscount?: number;
         minPrice?: number | null;
         maxPrice?: number | null;
-      };
+      }>({
+        prompt: contextPrompt,
+        maxTokens: 500,
+        temperature: 0.2
+      });
 
       const normalizedKeyword = (parsed.keyword ?? "")
         .trim()
