@@ -127,6 +127,21 @@ function normalizeName(title: string): string {
     .trim();
 }
 
+const IMAGE_TEXT_FALLBACK = "Big Savings";
+
+/**
+ * Image overlay text is set in words, never figures: a baked-in "63% off" goes stale the
+ * moment the discount changes, and the figure already shows next to the post. The prompt
+ * asks for words, so this is the backstop — a phrase carrying any number, percent or price
+ * is replaced outright, since stripping just the numeric token leaves debris ("63% off"
+ * would become "off").
+ */
+function sanitizeImageText(text: string): string {
+  const phrase = text.trim().replace(/\s+/g, " ");
+  if (!phrase || /[\d%$£€]/.test(phrase)) return IMAGE_TEXT_FALLBACK;
+  return phrase.split(" ").slice(0, 3).join(" ");
+}
+
 function urlHint(url: string): string {
   try {
     const parsed = new URL(url);
@@ -417,7 +432,7 @@ You generate ecommerce post-package fields.
 Return ONLY strict JSON. No markdown.
 
 Allowed keys:
-- Image_editing_text: one short punchy phrase (1-3 words)
+- Image_editing_text: one short punchy phrase (1-3 words), words only
 - name: clean product title, remove sizes/codes/noise
 - description: 2-4 sentence marketing copy
 - short_description: one concise sentence
@@ -439,6 +454,11 @@ Context:
 }
 
 Rules:
+- ALWAYS write every field in English, even when the source product title is in another
+  language. Translate the product title rather than echoing it. Keep brand names, model
+  names and team names as-is (e.g. "Nike", "Cincinnati Bengals", "Joe Burrow").
+- Image_editing_text must be words only: no digits, no "%", no prices. Write "Big Savings"
+  or "Half Price", never "63% off" or "$29.99".
 - Keep text safe for public affiliate post.
 - Keep output concise and relevant.
 - Use product title and external_url/url_hint_tokens to infer the actual item accurately.
@@ -455,7 +475,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
     });
 
     if (parsed.name) parsed.name = normalizeName(parsed.name);
-    if (parsed.Image_editing_text) parsed.Image_editing_text = parsed.Image_editing_text.trim().split(/\s+/).slice(0, 3).join(" ");
+    if (parsed.Image_editing_text) parsed.Image_editing_text = sanitizeImageText(parsed.Image_editing_text);
     if (parsed.button_text && !parsed.button_text.trim()) parsed.button_text = "Buy Now";
     if (parsed.metricool_schedule_datetime) {
       parsed.metricool_schedule_datetime = clampScheduleWithinWindow(parsed.metricool_schedule_datetime);

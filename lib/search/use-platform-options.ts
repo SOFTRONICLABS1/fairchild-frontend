@@ -5,10 +5,10 @@ import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getDisplayMessage } from "@/lib/api/errors";
 
 export type AdvertiserOption = { value: string; label: string };
-export type CampaignOption = { value: string; label: string; catalogIds: string[] };
+export type CampaignOption = { value: string; label: string };
 
 const CJ_CACHE_KEY = "search:cj-advertisers:v1";
-export const IMPACT_CAMPAIGN_MAP_KEY = "search:impact-campaign-map";
+const IMPACT_CAMPAIGN_CACHE_KEY = "search:impact-campaigns:v2";
 
 type CjLookupPayload = {
   "cj-api"?: {
@@ -40,7 +40,7 @@ function writeCache(key: string, value: unknown) {
 /**
  * Loads the joined CJ advertisers and Impact campaigns once per session and caches them,
  * so the search page and the results sidebar can both render the same pickers without
- * each paying for the lookup (the Impact one pages through every catalog).
+ * each paying for the lookup.
  */
 export function usePlatformOptions(enabled: { cj: boolean; impact: boolean }) {
   const [cjAdvertisers, setCjAdvertisers] = useState<AdvertiserOption[]>([]);
@@ -101,13 +101,9 @@ export function usePlatformOptions(enabled: { cj: boolean; impact: boolean }) {
     if (!enabled.impact) return;
     let cancelled = false;
 
-    const cachedMap = readCache<Record<string, string[]>>(IMPACT_CAMPAIGN_MAP_KEY);
-    if (cachedMap && Object.keys(cachedMap).length > 0) {
-      setImpactCampaigns(
-        Object.entries(cachedMap)
-          .map(([name, catalogIds]) => ({ value: name, label: name, catalogIds }))
-          .sort((a, b) => a.label.localeCompare(b.label))
-      );
+    const cached = readCache<CampaignOption[]>(IMPACT_CAMPAIGN_CACHE_KEY);
+    if (cached?.length) {
+      setImpactCampaigns(cached);
       return;
     }
 
@@ -115,38 +111,37 @@ export function usePlatformOptions(enabled: { cj: boolean; impact: boolean }) {
       setImpactLoading(true);
       setImpactError(null);
       try {
-        const limit = 20;
+        const limit = 100;
         let offset = 0;
-        const campaignMap = new Map<string, Set<string>>();
-        // The catalogs endpoint pages 20 at a time and there is no campaign-level list,
-        // so every page has to be walked to build the campaign -> catalogIds map.
+        const byId = new Map<string, string>();
+        // Impact's /Catalogs listing returns an empty set for this account even though the
+        // catalog items exist, so the advertiser picker is built from /Campaigns instead and
+        // item queries are scoped by CampaignId.
         while (true) {
-          const response = await http.get("/api/v1/impact/catalogs", { params: { limit, offset } });
-          const data = unwrapEnvelope<{ Catalogs?: Array<{ Id?: string; CampaignName?: string }> }>(response.data);
-          const catalogs = Array.isArray(data.Catalogs) ? data.Catalogs : [];
-          catalogs.forEach((catalog) => {
-            const campaignName = String(catalog.CampaignName ?? "").trim();
-            const catalogId = String(catalog.Id ?? "").trim();
-            if (!campaignName || !catalogId) return;
-            if (!campaignMap.has(campaignName)) campaignMap.set(campaignName, new Set());
-            campaignMap.get(campaignName)?.add(catalogId);
+          const response = await http.get("/api/v1/impact/campaigns", { params: { limit, offset } });
+          const data = unwrapEnvelope<{
+            Campaigns?: Array<{ CampaignId?: string; CampaignName?: string; ContractStatus?: string }>;
+          }>(response.data);
+          const campaigns = Array.isArray(data.Campaigns) ? data.Campaigns : [];
+          campaigns.forEach((campaign) => {
+            const campaignId = String(campaign.CampaignId ?? "").trim();
+            const campaignName = String(campaign.CampaignName ?? "").trim();
+            if (!campaignId || !campaignName) return;
+            // Expired contracts still come back from /Campaigns but their catalogs are gone,
+            // so listing them would only offer advertisers that can never return a product.
+            if (String(campaign.ContractStatus ?? "").trim().toLowerCase() !== "active") return;
+            byId.set(campaignId, campaignName);
           });
-          if (catalogs.length < limit) break;
+          if (campaigns.length < limit) break;
           offset += limit;
         }
 
-        const options = Array.from(campaignMap.entries())
-          .map(([name, ids]) => ({ value: name, label: name, catalogIds: Array.from(ids) }))
+        const options = Array.from(byId.entries())
+          .map(([value, label]) => ({ value, label }))
           .sort((a, b) => a.label.localeCompare(b.label));
         if (cancelled) return;
         setImpactCampaigns(options);
-        writeCache(
-          IMPACT_CAMPAIGN_MAP_KEY,
-          options.reduce<Record<string, string[]>>((acc, item) => {
-            acc[item.value] = item.catalogIds;
-            return acc;
-          }, {})
-        );
+        writeCache(IMPACT_CAMPAIGN_CACHE_KEY, options);
       } catch (error) {
         if (!cancelled) setImpactError(getDisplayMessage(error) || "Failed to load Impact campaigns");
       } finally {

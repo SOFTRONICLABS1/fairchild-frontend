@@ -655,6 +655,8 @@ You write social media caption text for affiliate product posts.
 Return ONLY strict JSON: {"text":"string"}
 
 Rules:
+- ALWAYS write in English, even when the product title or description is in another
+  language. Keep brand, model and team names as-is.
 - 2 to 4 lines max.
 - Concise, engaging, no hashtags spam.
 - Mention key product benefit naturally.
