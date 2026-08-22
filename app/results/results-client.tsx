@@ -31,7 +31,6 @@ const AUTO_LOAD_DELAY_MS = 2000;
 // Consecutive fetches that add nothing usable. Without this a filter that the client
 // prunes to zero (junk rows, failed link validation) would page forever with no gain.
 const AUTO_LOAD_STALL_LIMIT = 3;
-const IMPACT_CATALOG_BY_KEYWORD_LIMIT = 50;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const ENABLE_RESULTS_CACHE = true;
 const ENABLE_CJ_LINK_VALIDATION = true;
@@ -108,11 +107,6 @@ type ImpactPayload = {
   Items?: ImpactItem[];
   "@nextpageuri"?: string;
   "@total"?: string | number;
-};
-
-type ImpactCatalog = {
-  Id?: string;
-  CampaignName?: string;
 };
 
 type PlatformCursor = {
@@ -285,13 +279,20 @@ function dedupeByTitle(rows: ResultRow[]): ResultRow[] {
 async function fetchImpactPage(
   keyword: string,
   offset: number,
-  intent: SearchIntent
+  intent: SearchIntent,
+  campaignIds: string[] = []
 ): Promise<{ rows: ResultRow[]; nextOffset: number; hasMore: boolean; total: number }> {
   const params: Record<string, string | number> = {
     limit: API_PAGE_LIMIT,
     offset,
     ...toImpactParams(intent)
   };
+  // Advertiser scoping rides on ItemSearch's CampaignId filter; Impact's catalog listing
+  // is empty for this account, so there are no catalog ids to fan out over. Links saved before
+  // the picker moved from campaign names to ids still carry names, which the API rejects —
+  // drop those and fall back to searching every advertiser rather than failing the search.
+  const numericCampaignIds = campaignIds.filter((id) => /^\d+$/.test(id));
+  if (numericCampaignIds.length > 0) params.campaignIds = numericCampaignIds.join(",");
   // An absent keyword browses the whole catalog, which is what a pure deal search wants.
   if (keyword) params.keyword = keyword;
   console.debug("[results] impact request", { params });
@@ -322,56 +323,6 @@ async function fetchImpactPage(
   const total = Math.max(0, toNumber(data["@total"]));
   console.debug("[results] impact response", { rawCount: items.length, count: rows.length, hasMore, nextOffset, total });
   return { rows, nextOffset, hasMore, total };
-}
-
-async function fetchImpactCatalogByKeyword(
-  catalogId: string,
-  keyword: string,
-  intent: SearchIntent,
-  nextPageId?: string | null
-): Promise<{ rows: ResultRow[]; hasMore: boolean; nextAfterId: string | null; total: number }> {
-  const params: Record<string, string | number> = {
-    limit: IMPACT_CATALOG_BY_KEYWORD_LIMIT,
-    ...toImpactParams(intent)
-  };
-  if (keyword) params.keyword = keyword;
-  if (nextPageId) {
-    params.nextPageId = nextPageId;
-  }
-  // by-keyword requires a non-empty keyword, so a pure deal browse of one advertiser
-  // has to go through the plain items endpoint, which accepts no keyword at all.
-  const path = keyword
-    ? `/api/v1/impact/catalogs/${catalogId}/items/by-keyword`
-    : `/api/v1/impact/catalogs/${catalogId}/items`;
-  const payload = await http.get(path, { params });
-  const data = unwrapEnvelope<ImpactPayload>(payload.data);
-  const items = Array.isArray(data.Items) ? data.Items : [];
-  const rows = items.map((item) => {
-    const currentPrice = toNumber(item.CurrentPrice);
-    const originalPrice = toNumber(item.OriginalPrice) || currentPrice;
-    return {
-      rowKey: `impact-${item.Id}-${item.CatalogId ?? catalogId}`,
-      id: `impact-${item.Id}`,
-      product: item.Name,
-      companyName: item.CampaignName ?? "",
-      campaignId: item.CampaignId,
-      imageUrl: item.ImageUrl,
-      imageCandidates: buildImageCandidates(item.ImageUrl, item.AdditionalImageUrls),
-      productUrl: item.Url ?? "",
-      platform: "Impact" as const,
-      price: currentPrice,
-      discount: calculateDiscount(originalPrice, currentPrice)
-    };
-  });
-  let nextAfterId: string | null = null;
-  const nextUri = data["@nextpageuri"] ?? "";
-  if (nextUri) {
-    const query = nextUri.includes("?") ? nextUri.split("?")[1] : "";
-    const search = new URLSearchParams(query);
-    nextAfterId = search.get("AfterId");
-  }
-  const hasMore = Boolean(nextAfterId);
-  return { rows, hasMore, nextAfterId, total: Math.max(0, toNumber(data["@total"])) };
 }
 
 async function fetchCjPage(
@@ -494,27 +445,14 @@ export default function ResultsClientPage() {
   const impactValidationQueueRef = useRef<ImpactValidationQueueItem[]>([]);
   const impactValidationRunningRef = useRef(false);
   const searchEpochRef = useRef(0);
-  const impactCampaignMapRef = useRef<Record<string, string[]>>({});
-  const impactCatalogAfterIdRef = useRef<Record<string, string | null>>({});
 
   // Intent is part of the key so changing a filter never serves rows fetched under the old one.
   const cacheKey = useMemo(
     () =>
-      `results-cache:v3:${keyword}:${useCj ? "1" : "0"}:${useImpact ? "1" : "0"}:${cjAdvertiserKey || "all"}:${impactCampaignKey || "all"}` +
+      `results-cache:v4:${keyword}:${useCj ? "1" : "0"}:${useImpact ? "1" : "0"}:${cjAdvertiserKey || "all"}:${impactCampaignKey || "all"}` +
       `:${intent.sort}:${intent.minDiscount}:${intent.minPrice ?? ""}:${intent.maxPrice ?? ""}`,
     [keyword, useCj, useImpact, cjAdvertiserKey, impactCampaignKey, intent]
   );
-
-  useEffect(() => {
-    try {
-      const rawMap = sessionStorage.getItem("search:impact-campaign-map");
-      if (rawMap) {
-        impactCampaignMapRef.current = JSON.parse(rawMap) as Record<string, string[]>;
-      }
-    } catch {
-      impactCampaignMapRef.current = {};
-    }
-  }, []);
 
   useEffect(() => {
     const params = searchParams.toString();
@@ -525,44 +463,6 @@ export default function ResultsClientPage() {
   useEffect(() => {
     setKeywordDraft(keyword);
   }, [keyword]);
-
-  const fetchImpactCampaignCatalogMap = async (): Promise<Record<string, string[]>> => {
-    if (Object.keys(impactCampaignMapRef.current).length > 0) {
-      return impactCampaignMapRef.current;
-    }
-    const limit = 20;
-    let offset = 0;
-    const map = new Map<string, Set<string>>();
-    while (true) {
-      const response = await http.get("/api/v1/impact/catalogs", {
-        params: { limit, offset }
-      });
-      const data = unwrapEnvelope<{ Catalogs?: ImpactCatalog[] }>(response.data);
-      const catalogs = Array.isArray(data.Catalogs) ? data.Catalogs : [];
-      catalogs.forEach((catalog) => {
-        const campaignName = String(catalog.CampaignName ?? "").trim();
-        const catalogId = String(catalog.Id ?? "").trim();
-        if (!campaignName || !catalogId) return;
-        if (!map.has(campaignName)) {
-          map.set(campaignName, new Set());
-        }
-        map.get(campaignName)?.add(catalogId);
-      });
-      if (catalogs.length < limit) break;
-      offset += limit;
-    }
-    const objectMap = Array.from(map.entries()).reduce<Record<string, string[]>>((acc, [name, ids]) => {
-      acc[name] = Array.from(ids);
-      return acc;
-    }, {});
-    impactCampaignMapRef.current = objectMap;
-    try {
-      sessionStorage.setItem("search:impact-campaign-map", JSON.stringify(objectMap));
-    } catch {
-      // ignore cache write errors
-    }
-    return objectMap;
-  };
 
   useEffect(() => {
     try {
@@ -828,51 +728,8 @@ export default function ResultsClientPage() {
     }
     if (useImpact && state.impactHasMore) {
       tasks.push((async () => {
-        if (impactCampaigns.length === 0) {
-          const result = await fetchImpactPage(keyword, state.impactOffset, intent);
-          return { platform: "Impact" as const, result: { rows: result.rows, nextOffset: result.nextOffset, hasMore: result.hasMore, total: result.total } };
-        }
-
-        const campaignMap = await fetchImpactCampaignCatalogMap();
-        // Several campaigns can share a catalog, so union the ids rather than concatenating.
-        const catalogIds = Array.from(
-          new Set(impactCampaigns.flatMap((campaign) => campaignMap[campaign] ?? []))
-        );
-        if (catalogIds.length === 0) {
-          return { platform: "Impact" as const, result: { rows: [], nextOffset: state.impactOffset, hasMore: false, total: 0 } };
-        }
-
-        const settledCatalogs = await Promise.allSettled(
-          catalogIds.map((catalogId) =>
-            fetchImpactCatalogByKeyword(
-              catalogId,
-              keyword,
-              intent,
-              impactCatalogAfterIdRef.current[catalogId] ?? null
-            )
-          )
-        );
-        const combinedRows: ResultRow[] = [];
-        let anyHasMore = false;
-        let combinedTotal = 0;
-        const warnings: FetchFailure[] = [];
-        settledCatalogs.forEach((catalogResult, index) => {
-          const catalogId = catalogIds[index];
-          if (catalogResult.status === "fulfilled") {
-            combinedRows.push(...catalogResult.value.rows);
-            combinedTotal += catalogResult.value.total;
-            impactCatalogAfterIdRef.current[catalogId] = catalogResult.value.nextAfterId;
-            if (catalogResult.value.hasMore) anyHasMore = true;
-          } else {
-            const meta = getErrorMeta(catalogResult.reason);
-            warnings.push({ message: meta.message || "Impact catalog fetch failed", retryable: meta.retryable });
-          }
-        });
-        return {
-          platform: "Impact" as const,
-          result: { rows: combinedRows, nextOffset: state.impactOffset + API_PAGE_LIMIT, hasMore: anyHasMore, total: combinedTotal },
-          warnings
-        };
+        const result = await fetchImpactPage(keyword, state.impactOffset, intent, impactCampaigns);
+        return { platform: "Impact" as const, result: { rows: result.rows, nextOffset: result.nextOffset, hasMore: result.hasMore, total: result.total } };
       })());
     }
 
@@ -921,7 +778,6 @@ export default function ResultsClientPage() {
         searchEpochRef.current += 1;
         cjValidationQueueRef.current = [];
         impactValidationQueueRef.current = [];
-        impactCatalogAfterIdRef.current = {};
         setCjValidationState({});
         setImpactValidationState({});
         setInvalidNoticeCount(0);
