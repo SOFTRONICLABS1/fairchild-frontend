@@ -63,6 +63,8 @@ type PostPackage = {
   sale_price: string;
   images: Array<{ id: number }>;
   meta_data: Array<{ key: string; value: string }>;
+  render_preview_href?: string;
+  render_preview_text?: string;
 };
 
 type MetricoolPayload = {
@@ -815,6 +817,16 @@ Context:
     pinterestBoards: PinterestBoard[]
   ): Promise<void> => {
     const runData: ProductRunData = productRunDataRef.current[product.id] ?? {};
+    // Reuse the render already approved on the Post Package preview step, as long as the
+    // caption hasn't changed since — an edit after previewing means the baked-in text would
+    // no longer match, so that case falls through and renders fresh below instead.
+    if (
+      !runData.renderHref &&
+      basePostPackage.render_preview_href &&
+      basePostPackage.render_preview_text === basePostPackage.Image_editing_text
+    ) {
+      runData.renderHref = basePostPackage.render_preview_href;
+    }
     productRunDataRef.current[product.id] = runData;
 
     setProductStep(product.id, 0, "running");
