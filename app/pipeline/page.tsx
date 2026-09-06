@@ -5,6 +5,7 @@ import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getErrorMeta } from "@/lib/api/errors";
 import { generateJson } from "@/lib/ai/generate";
+import { captureImageAsFile } from "@/lib/media/capture-image";
 
 type SelectedProduct = {
   id: string;
@@ -847,6 +848,32 @@ Context:
           });
           break;
         } catch (error) {
+          const meta = getErrorMeta(error);
+          // The photo's CDN may be blocking RenderForm's server-side fetch (Cloudflare and
+          // similar bot protection) while the browser can load it fine — try reading those
+          // bytes back out of the browser and uploading them directly before giving up.
+          // Silent: no retry log, no UI change, only the outcome (success or the same error
+          // the product would have failed with anyway).
+          if (meta.code === "IMAGE_INVALID_OR_BLANK") {
+            const file = await captureImageAsFile(product.imageUrl);
+            if (file) {
+              try {
+                const uploadForm = new FormData();
+                // Guarded by the pre-flight check before the pipeline starts (selectedTemplateId
+                // must be set to reach this render step at all).
+                uploadForm.append("template", selectedTemplateId ?? "");
+                uploadForm.append("titleText", basePostPackage.Image_editing_text);
+                uploadForm.append("image", file);
+                renderResponse = await http.post("/api/v1/renderform/render/upload", uploadForm, {
+                  headers: { "Content-Type": "multipart/form-data" }
+                });
+                break;
+              } catch {
+                // Upload path failed too; fall through to the original error below.
+              }
+            }
+            throw error;
+          }
           const isFinalAttempt = attempt >= RENDER_RETRY_DELAYS_MS.length;
           if (!isRetryableRenderError(error) || isFinalAttempt) {
             throw error;

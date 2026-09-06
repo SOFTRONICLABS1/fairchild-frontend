@@ -9,6 +9,7 @@ import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getDisplayMessage, getErrorMeta } from "@/lib/api/errors";
 import { generateJson } from "@/lib/ai/generate";
 import { loadWordPressCategories, type WordPressCategoryOption } from "@/lib/wordpress/categories";
+import { captureImageAsFile } from "@/lib/media/capture-image";
 
 type SelectedProduct = {
   id: string;
@@ -532,6 +533,22 @@ ${mode === "force_variation" ? "- If multiple categories are plausible, choose a
     setConfirmDeleteIndex(null);
   };
 
+  // Posts an already-downloaded image file through /render/upload, which inlines it as a data
+  // URL so RenderForm never has to fetch anything itself — the fallback path for CDNs whose
+  // bot protection blocks a normal server-side fetch of imageSrc.
+  const uploadRenderedFile = async (index: number, file: File, template: string, titleText: string) => {
+    const form = new FormData();
+    form.append("template", template);
+    form.append("titleText", titleText);
+    form.append("image", file);
+    const response = await http.post("/api/v1/renderform/render/upload", form, {
+      headers: { "Content-Type": "multipart/form-data" }
+    });
+    const data = unwrapEnvelope<{ href: string }>(response.data);
+    patchPackageAt(index, { render_preview_href: data.href, render_preview_text: titleText });
+    setRenderPreview((prev) => ({ ...prev, [index]: { status: "ready" } }));
+  };
+
   // Core render call. Takes the image/caption explicitly so the initial parallel run can
   // fire it with freshly generated text without waiting for that text to land in state.
   const renderPreviewFor = async (index: number, imageSrc: string, titleText: string, template: string) => {
@@ -551,6 +568,21 @@ ${mode === "force_variation" ? "- If multiple categories are plausible, choose a
     } catch (renderError) {
       const meta = getErrorMeta(renderError);
       const isBlank = meta.code === "IMAGE_INVALID_OR_BLANK";
+      // The photo's CDN may be blocking RenderForm's server-side fetch (Cloudflare and similar
+      // bot protection) while the browser can load it fine — try reading those bytes back out
+      // of the browser and uploading them directly before giving up. Silent: no UI reflects
+      // this attempt, only its outcome.
+      if (isBlank) {
+        const file = await captureImageAsFile(imageSrc);
+        if (file) {
+          try {
+            await uploadRenderedFile(index, file, template, trimmed);
+            return;
+          } catch {
+            // Fall through to the same failure state as if capture had never been tried.
+          }
+        }
+      }
       setRenderPreview((prev) => ({
         ...prev,
         [index]: {
