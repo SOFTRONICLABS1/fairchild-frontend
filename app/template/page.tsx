@@ -5,6 +5,7 @@ import Link from "next/link";
 import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
+import { getRenderBase } from "@/lib/api/render-engine";
 
 type RenderformTemplate = {
   identifier: string;
@@ -24,7 +25,7 @@ export default function TemplatePage() {
       setLoading(true);
       setError(null);
       try {
-        const response = await http.get("/api/v1/renderform/templates");
+        const response = await http.get(`${await getRenderBase()}/templates`);
         const list = unwrapEnvelope<RenderformTemplate[]>(response.data);
         const ordered = [...list].sort((a, b) => {
           const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;

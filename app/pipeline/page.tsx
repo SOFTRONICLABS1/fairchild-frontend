@@ -6,6 +6,7 @@ import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getErrorMeta } from "@/lib/api/errors";
 import { generateJson } from "@/lib/ai/generate";
 import { captureImageAsFile } from "@/lib/media/capture-image";
+import { getRenderBase } from "@/lib/api/render-engine";
 
 type SelectedProduct = {
   id: string;
@@ -486,7 +487,7 @@ export default function PipelinePage() {
       setLoadingTemplates(true);
       setTemplatesError(null);
       try {
-        const response = await http.get("/api/v1/renderform/templates");
+        const response = await http.get(`${await getRenderBase()}/templates`);
         const data = unwrapEnvelope<RenderformTemplate[]>(response.data);
         setTemplates(data);
         const sessionSelected = sessionStorage.getItem("pipeline:selected-template");
@@ -840,7 +841,7 @@ Context:
       let renderResponse;
       for (let attempt = 0; attempt < RENDER_RETRY_DELAYS_MS.length + 1; attempt += 1) {
         try {
-          renderResponse = await http.post("/api/v1/renderform/render", {
+          renderResponse = await http.post(`${await getRenderBase()}/render`, {
             template: selectedTemplateId,
             titleText: basePostPackage.Image_editing_text,
             imageSrc: product.imageUrl,
@@ -864,7 +865,7 @@ Context:
                 uploadForm.append("template", selectedTemplateId ?? "");
                 uploadForm.append("titleText", basePostPackage.Image_editing_text);
                 uploadForm.append("image", file);
-                renderResponse = await http.post("/api/v1/renderform/render/upload", uploadForm, {
+                renderResponse = await http.post(`${await getRenderBase()}/render/upload`, uploadForm, {
                   headers: { "Content-Type": "multipart/form-data" }
                 });
                 break;

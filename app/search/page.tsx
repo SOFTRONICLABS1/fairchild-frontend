@@ -8,16 +8,16 @@ export default function SearchPage() {
     <>
       <TopNav />
       <div className="page-wrap flex items-center">
-        <div className="mx-auto max-w-[880px] -translate-y-12">
+        <div className="mx-auto w-full max-w-[1120px]">
           <div className="agency-hero agency-chooser-hero agency-header-card mb-8">
             <div>
               <p className="agency-kicker">Choose Your Workflow</p>
               <h1 className="agency-title">Choose how you want to create content</h1>
-              <p className="agency-copy">Start with affiliate publishing or brand campaign packaging.</p>
+              <p className="agency-copy">Start with affiliate publishing, brand campaign packaging, or the daily GPC website automation.</p>
             </div>
           </div>
 
-          <div className="grid gap-5 md:grid-cols-2">
+          <div className="grid gap-5 md:grid-cols-3">
             <Link href="/agency/login" className="agency-entry-card">
               <div className="agency-entry-top">
                 <span className="agency-entry-badge agency-entry-badge-brand">AB</span>
@@ -59,6 +59,28 @@ export default function SearchPage() {
                 <div className="agency-entry-spacer" />
                 <div className="agency-entry-cta agency-entry-cta-affiliate">
                   <span>Get started</span>
+                  <span className="agency-entry-arrow">→</span>
+                </div>
+              </div>
+            </Link>
+            <Link href="/gpc" className="agency-entry-card agency-entry-card-muted">
+              <div className="agency-entry-top">
+                <span className="agency-entry-badge agency-entry-badge-gpc">GP</span>
+                <div className="agency-steps">
+                  <span>Schedule</span>
+                  <span className="agency-steps-sep">/</span>
+                  <span>Review</span>
+                  <span className="agency-steps-sep">/</span>
+                  <span>Post</span>
+                </div>
+              </div>
+              <div className="agency-entry-body">
+                <p className="agency-entry-label">GPC Website Automation</p>
+                <h2 className="agency-entry-title">Automate daily products and blogs</h2>
+                <p className="agency-entry-copy">Pick Google product categories from WordPress, post discounted CJ and Impact deals every day, and publish blogs on a schedule.</p>
+                <div className="agency-entry-spacer" />
+                <div className="agency-entry-cta agency-entry-cta-gpc">
+                  <span>Open automation</span>
                   <span className="agency-entry-arrow">→</span>
                 </div>
               </div>

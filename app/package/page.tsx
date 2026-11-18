@@ -10,6 +10,7 @@ import { getDisplayMessage, getErrorMeta } from "@/lib/api/errors";
 import { generateJson } from "@/lib/ai/generate";
 import { loadWordPressCategories, type WordPressCategoryOption } from "@/lib/wordpress/categories";
 import { captureImageAsFile } from "@/lib/media/capture-image";
+import { getRenderBase } from "@/lib/api/render-engine";
 
 type SelectedProduct = {
   id: string;
@@ -541,7 +542,7 @@ ${mode === "force_variation" ? "- If multiple categories are plausible, choose a
     form.append("template", template);
     form.append("titleText", titleText);
     form.append("image", file);
-    const response = await http.post("/api/v1/renderform/render/upload", form, {
+    const response = await http.post(`${await getRenderBase()}/render/upload`, form, {
       headers: { "Content-Type": "multipart/form-data" }
     });
     const data = unwrapEnvelope<{ href: string }>(response.data);
@@ -556,7 +557,7 @@ ${mode === "force_variation" ? "- If multiple categories are plausible, choose a
     if (!imageSrc || !trimmed || !template) return;
     setRenderPreview((prev) => ({ ...prev, [index]: { status: "rendering" } }));
     try {
-      const response = await http.post("/api/v1/renderform/render", {
+      const response = await http.post(`${await getRenderBase()}/render`, {
         template,
         titleText: trimmed,
         imageSrc,
