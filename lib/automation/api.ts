@@ -64,6 +64,9 @@ export type RunItem = {
 };
 export type RunDetail = Run & { items: RunItem[] };
 
+export type CustomBlogDraft = { title: string; excerpt: string; content: string };
+export type CustomBlogResult = { id: number | null; link: string | null; status: string };
+
 export type RunRequest = { dry_run: boolean; max_categories?: number };
 
 const base = "/api/v1/automation";
@@ -89,6 +92,10 @@ export const automationApi = {
     unwrapEnvelope<{ run_id: number; cancelling: boolean }>(
       (await http.post<ApiEnvelope<{ run_id: number; cancelling: boolean }>>(`${base}/runs/${id}/cancel`, {})).data
     ),
+  customBlogGenerate: async (prompt: string) =>
+    unwrapEnvelope<CustomBlogDraft>((await http.post<ApiEnvelope<CustomBlogDraft>>(`${base}/blog/custom/generate`, { prompt })).data),
+  customBlogPublish: async (body: CustomBlogDraft & { status: "publish" | "draft" | "pending" }) =>
+    unwrapEnvelope<CustomBlogResult>((await http.post<ApiEnvelope<CustomBlogResult>>(`${base}/blog/custom/publish`, body)).data),
   syncCategories: async () =>
     unwrapEnvelope<{ total: number; leaf_count: number; synced_at: string }>(
       (await http.post<ApiEnvelope<{ total: number; leaf_count: number; synced_at: string }>>(`${base}/categories/sync`, {})).data
