@@ -8,6 +8,7 @@ import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getDisplayMessage, getErrorMeta } from "@/lib/api/errors";
 import { generateJson } from "@/lib/ai/generate";
+import { loadOverrides, reviewApi, saveOverrides, type ReviewVerdict } from "@/lib/review/api";
 import { loadWordPressCategories, type WordPressCategoryOption } from "@/lib/wordpress/categories";
 import { captureImageAsFile } from "@/lib/media/capture-image";
 import { getRenderBase } from "@/lib/api/render-engine";
@@ -937,10 +938,58 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
     void runInitialAI();
   }, [packages, products, wordpressCategories, templateId]);
 
+  // Content review of the generated text (name, description, image text). Rejected products block "Start Pipeline"
+  // until they are regenerated, removed, or overridden.
+  const [reviewVerdicts, setReviewVerdicts] = useState<Record<string, ReviewVerdict>>({});
+  const [reviewOverrides, setReviewOverrides] = useState<Record<string, boolean>>({});
+  const [reviewBusy, setReviewBusy] = useState(false);
+  useEffect(() => setReviewOverrides(loadOverrides()), []);
+
   const allProductsAiReady = useMemo(() => {
     if (products.length === 0) return false;
     return products.every((product) => aiReadyByProduct[product.id]);
   }, [aiReadyByProduct, products]);
+
+  const reviewKey = useMemo(
+    () => JSON.stringify(products.map((product, index) => [product.id, packages[index]?.name, packages[index]?.description, packages[index]?.Image_editing_text])),
+    [products, packages]
+  );
+  useEffect(() => {
+    if (!allProductsAiReady || products.length === 0) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setReviewBusy(true);
+      const items = products.map((product, index) => ({
+        id: product.id,
+        title: packages[index]?.name || product.product,
+        brand: product.companyName,
+        description: `${packages[index]?.short_description ?? ""} ${packages[index]?.description ?? ""}`.trim(),
+        image_text: packages[index]?.Image_editing_text ?? "",
+        url: product.productUrl,
+        price: product.price,
+        discount: product.discount,
+        platform: product.platform
+      }));
+      const res = await reviewApi
+        .products(items)
+        .catch(() => items.map((item) => ({ id: item.id, verdict: "reject", reason: "Could not be reviewed - try again or override", source: "error" }) as ReviewVerdict));
+      if (cancelled) return;
+      setReviewVerdicts(Object.fromEntries(res.map((v) => [v.id, v])));
+      setReviewBusy(false);
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      setReviewBusy(false);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allProductsAiReady, reviewKey]);
+  const blockedProducts = products.filter((product) => reviewVerdicts[product.id]?.verdict === "reject" && !reviewOverrides[product.id]);
+  const overrideProduct = (productId: string) => {
+    const next = { ...reviewOverrides, [productId]: true };
+    setReviewOverrides(next);
+    saveOverrides(next);
+  };
 
   const activeScheduleParts = useMemo(
     () => parseScheduleParts(activePackage?.metricool_schedule_datetime ?? ""),
@@ -1375,7 +1424,7 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
               <button
                 type="button"
                 className="btn-primary text-center disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={!allProductsAiReady || regeneratingAll}
+                disabled={!allProductsAiReady || regeneratingAll || reviewBusy || blockedProducts.length > 0}
                 onClick={() => router.push("/pipeline")}
               >
                 Start Pipeline
@@ -1385,6 +1434,23 @@ ${mode === "force_variation" ? "- Generate a clearly different variation than th
               <p className="mt-2 text-xs text-slate-500">
                 AI is generating package fields for all selected products.
               </p>
+            ) : reviewBusy ? (
+              <p className="mt-2 text-xs text-slate-500">Checking the generated text with content review…</p>
+            ) : null}
+            {blockedProducts.length > 0 ? (
+              <div className="mt-3 rounded-lg p-3 text-xs" style={{ border: "2px dashed #d97706", background: "#fffbeb" }}>
+                <p className="mb-2 font-semibold text-amber-900">Rejected by content review ({blockedProducts.length})</p>
+                {blockedProducts.map((product) => (
+                  <div key={product.id} className="mb-2">
+                    <p className="font-medium">{product.product}</p>
+                    <p className="text-amber-800">{reviewVerdicts[product.id]?.reason}</p>
+                    <button type="button" className="underline" onClick={() => overrideProduct(product.id)}>
+                      Override and allow
+                    </button>
+                  </div>
+                ))}
+                <p className="text-slate-600">Regenerate the text, remove the product, or override to continue.</p>
+              </div>
             ) : null}
           </div>
         </aside>

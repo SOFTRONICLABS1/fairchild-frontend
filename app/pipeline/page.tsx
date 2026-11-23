@@ -5,6 +5,7 @@ import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getErrorMeta } from "@/lib/api/errors";
 import { generateJson } from "@/lib/ai/generate";
+import { loadOverrides, reviewApi, type ReviewItem, type ReviewVerdict } from "@/lib/review/api";
 import { captureImageAsFile } from "@/lib/media/capture-image";
 import { getRenderBase } from "@/lib/api/render-engine";
 
@@ -32,6 +33,23 @@ type RenderformTemplate = {
 
 type OptionKey = "wordpress" | "metricool" | "gpt" | "imageEdit";
 type StepState = "waiting" | "running" | "done" | "failed";
+/** Raised when content review rejects a post; never retried because the answer would not change. */
+class ContentBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ContentBlockedError";
+  }
+}
+
+const reviewOne = async (item: ReviewItem): Promise<ReviewVerdict> => {
+  try {
+    const [verdict] = await reviewApi.products([item]);
+    return verdict;
+  } catch {
+    return { id: item.id, verdict: "reject", reason: "Could not be reviewed - try again or override on the Results page", source: "error" };
+  }
+};
+
 type ProductRunState = "waiting" | "running" | "retrying" | "done" | "failed";
 
 type ProductRunData = {
@@ -967,6 +985,21 @@ Context:
       }
       pushLog("ok", `[${product.product}] Metricool media uploaded`);
       const metricoolText = await generateMetricoolText(product, basePostPackage, wpPermalink);
+      if (!loadOverrides()[product.id]) {
+        const captionVerdict = await reviewOne({
+          id: product.id,
+          title: basePostPackage.name || product.product,
+          brand: product.companyName,
+          caption: metricoolText,
+          url: product.productUrl,
+          price: product.price,
+          discount: product.discount,
+          platform: product.platform
+        });
+        if (captionVerdict.verdict === "reject") {
+          throw new ContentBlockedError(`Social post blocked by content review: ${captionVerdict.reason}`);
+        }
+      }
       const boardMatch = pickBestPinterestBoard(product.product, product.companyName, pinterestBoards);
       if (!boardMatch) {
         throw new Error("No Pinterest boards available to post.");
@@ -1027,6 +1060,15 @@ Context:
         await attemptProductOnce(product, basePostPackage, pinterestBoards);
         return true;
       } catch (error) {
+        if (error instanceof ContentBlockedError) {
+          setProductState(product.id, "failed");
+          setProductStepStates((prev) => {
+            const current = prev[product.id] ?? ["waiting", "waiting", "waiting", "waiting"];
+            return { ...prev, [product.id]: current.map((step) => (step === "running" ? "failed" : step)) as StepState[] };
+          });
+          pushLog("err", `[${product.product}] ${error.message}. The WordPress product was created; only the social post was skipped.`);
+          return false;
+        }
         const meta = getErrorMeta(error);
         const isFinalAttempt = attempt >= maxAttempts - 1;
         if (!isFinalAttempt) {

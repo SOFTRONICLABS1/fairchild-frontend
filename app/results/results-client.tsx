@@ -6,6 +6,8 @@ import TopNav from "@/components/flow/top-nav";
 import FlowStepper from "@/components/flow/stepper";
 import { http, unwrapEnvelope } from "@/lib/api/client";
 import { getErrorMeta } from "@/lib/api/errors";
+import RejectKeywords from "@/components/review/reject-keywords";
+import { loadOverrides, reviewApi, saveOverrides, type ReviewVerdict } from "@/lib/review/api";
 import DealsPanel from "@/components/search/deals-panel";
 import MultiSelectChips from "@/components/search/multi-select-chips";
 import { usePlatformOptions } from "@/lib/search/use-platform-options";
@@ -420,6 +422,10 @@ export default function ResultsClientPage() {
   const [keywordDraft, setKeywordDraft] = useState("");
   const [rows, setRows] = useState<ResultRow[]>([]);
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
+  // Content review (Claude + reject keywords): rejected products are blocked unless the user overrides.
+  const [verdicts, setVerdicts] = useState<Record<string, ReviewVerdict>>({});
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  const [reviewing, setReviewing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [autoLoadStalls, setAutoLoadStalls] = useState(0);
@@ -898,9 +904,10 @@ export default function ResultsClientPage() {
     await loadMore();
   };
 
+  const isBlocked = (rowId: string) => verdicts[rowId]?.verdict === "reject" && !overrides[rowId];
   const selectedCount = useMemo(
-    () => rows.filter((row) => Boolean(selectedIds[row.id])).length,
-    [rows, selectedIds]
+    () => rows.filter((row) => Boolean(selectedIds[row.id]) && !(verdicts[row.id]?.verdict === "reject" && !overrides[row.id])).length,
+    [rows, selectedIds, verdicts, overrides]
   );
   const filteredRows = useMemo(() => {
     const validated = rows.filter((row) => {
@@ -969,9 +976,18 @@ export default function ResultsClientPage() {
     [cjValidationState]
   );
   const selectedRows = useMemo(
-    () => filteredRows.filter((row) => Boolean(selectedIds[row.id])),
-    [filteredRows, selectedIds]
+    () => filteredRows.filter((row) => Boolean(selectedIds[row.id]) && !(verdicts[row.id]?.verdict === "reject" && !overrides[row.id])),
+    [filteredRows, selectedIds, verdicts, overrides]
   );
+
+  useEffect(() => setOverrides(loadOverrides()), []);
+
+  const rejectedCount = useMemo(() => rows.filter((row) => Boolean(selectedIds[row.id]) && verdicts[row.id]?.verdict === "reject" && !overrides[row.id]).length, [rows, selectedIds, verdicts, overrides]);
+  const overrideRow = (rowId: string) => {
+    const next = { ...overrides, [rowId]: true };
+    setOverrides(next);
+    saveOverrides(next);
+  };
 
   /** Filters live in the URL, so changing one re-queries the platforms, not the loaded page. */
   const applyIntentToUrl = (nextIntent: SearchIntent, nextKeyword?: string) => {
@@ -1012,9 +1028,29 @@ export default function ResultsClientPage() {
   const intentChips = useMemo(() => describeIntent(intent), [intent]);
   const totalAvailable = platformTotals.cj + platformTotals.impact;
 
-  const handleBuildPostPackage = () => {
-    if (selectedRows.length === 0) {
+  const handleBuildPostPackage = async () => {
+    const chosen = filteredRows.filter((row) => Boolean(selectedIds[row.id]));
+    if (chosen.length === 0) {
       setError("Select at least one product to continue to Review.");
+      return;
+    }
+    // Content review runs only for the products you selected, using every detail we have for them.
+    const unchecked = chosen.filter((row) => !verdicts[row.id]);
+    if (unchecked.length > 0) {
+      setReviewing(true);
+      setError(null);
+      const asItems = (batch: ResultRow[]) =>
+        batch.map((row) => ({ id: row.id, title: row.product, brand: row.companyName, url: row.productUrl, price: row.price, discount: row.discount, platform: row.platform }));
+      const res = await reviewApi
+        .products(asItems(unchecked))
+        .catch(() => unchecked.map((row) => ({ id: row.id, verdict: "reject", reason: "Could not be reviewed - try again or override", source: "error" }) as ReviewVerdict));
+      setReviewing(false);
+      setVerdicts((prev) => ({ ...prev, ...Object.fromEntries(res.map((v) => [v.id, v])) }));
+      if (res.some((v) => v.verdict === "reject" && !overrides[v.id])) return; // show them; the next press continues without them
+    }
+    const stillOk = chosen.filter((row) => !(verdicts[row.id]?.verdict === "reject" && !overrides[row.id]));
+    if (unchecked.length === 0 && stillOk.length === 0) {
+      setError("Every selected product was rejected by content review. Override one or choose different products.");
       return;
     }
     const payload = selectedRows.map((row) => ({
@@ -1175,6 +1211,15 @@ export default function ResultsClientPage() {
           <p className="mb-2 text-xs text-slate-500">
             {loading ? "Loading results..." : `Showing ${visibleRows.length} of ${filteredRows.length} results · ${selectedCount} selected`}
           </p>
+          <RejectKeywords
+            onSaved={() => setVerdicts({})}
+          />
+          {reviewing ? <p className="mb-2 text-xs text-slate-500">Checking the selected products with content review…</p> : null}
+          {!reviewing && rejectedCount > 0 ? (
+            <p className="mb-2 text-xs text-amber-800">
+              {rejectedCount} selected product(s) were rejected by content review (dashed). Override a product if you are sure it is safe, or press Review selection again to continue without them.
+            </p>
+          ) : null}
           {!loading && ENABLE_CJ_LINK_VALIDATION && pendingCjValidations > 0 ? (
             <p className="mb-2 text-xs text-slate-500">Validating links... {pendingCjValidations} pending</p>
           ) : null}
@@ -1213,7 +1258,7 @@ export default function ResultsClientPage() {
                         setSelectedIds((prev) => {
                           const next = { ...prev };
                           visibleRows.forEach((row) => {
-                            next[row.id] = checked;
+                            next[row.id] = checked && !isBlocked(row.id);
                           });
                           return next;
                         });
@@ -1229,11 +1274,13 @@ export default function ResultsClientPage() {
               </thead>
               <tbody>
                 {visibleRows.map((row) => (
-                  <tr key={row.rowKey}>
+                  <tr key={row.rowKey} className={isBlocked(row.id) ? "opacity-60" : undefined} style={isBlocked(row.id) ? { outline: "2px dashed #d97706", outlineOffset: -2 } : undefined}>
                     <td className="border-t border-slate-200 p-2 pl-3 text-left">
                       <input
                         type="checkbox"
-                        checked={Boolean(selectedIds[row.id])}
+                        disabled={isBlocked(row.id)}
+                        title={isBlocked(row.id) ? "Rejected by content review" : undefined}
+                        checked={Boolean(selectedIds[row.id]) && !isBlocked(row.id)}
                         onChange={(event) =>
                           setSelectedIds((prev) => ({ ...prev, [row.id]: event.target.checked }))
                         }
@@ -1264,6 +1311,16 @@ export default function ResultsClientPage() {
                         <div>
                           <p className="text-sm font-medium">{row.product}</p>
                           {row.companyName ? <p className="text-xs text-slate-500">{row.companyName}</p> : null}
+                          {isBlocked(row.id) ? (
+                            <p className="mt-1 text-xs text-amber-800">
+                              <span className="rounded bg-amber-100 px-1.5 py-[1px] font-medium">Rejected</span> {verdicts[row.id]?.reason}{" "}
+                              <button type="button" className="underline" onClick={() => overrideRow(row.id)}>
+                                Override
+                              </button>
+                            </p>
+                          ) : overrides[row.id] && verdicts[row.id]?.verdict === "reject" ? (
+                            <p className="mt-1 text-xs text-slate-500">Overridden: {verdicts[row.id]?.reason}</p>
+                          ) : null}
                         </div>
                         {row.productUrl ? (
                           <a
@@ -1435,7 +1492,7 @@ export default function ResultsClientPage() {
           <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur">
             <div className="flex w-full items-center justify-end px-4 py-3 md:px-6">
               <div className="flex gap-2">
-              <button type="button" onClick={handleBuildPostPackage} className="btn-primary">Review selection</button>
+              <button type="button" onClick={() => void handleBuildPostPackage()} disabled={reviewing} className="btn-primary">{reviewing ? "Checking…" : "Review selection"}</button>
               </div>
             </div>
           </div>
