@@ -599,7 +599,7 @@ export default function GpcAutomationPage() {
                 <ScheduleFields s={blog} onChange={patchB} noun="blog" />
                 <div className="gpc-sep" />
                 <div className="gpc-grid">
-                  <NumField label="Blogs per day" value={blog.blogs_per_day} min={1} max={50} onChange={(v) => patchB({ blogs_per_day: v })} hint="Each blog is about a different random category." />
+                  <NumField label="Blogs per day" value={blog.blogs_per_day} min={1} onChange={(v) => patchB({ blogs_per_day: v })} hint="Each blog is about a different random category." />
                 </div>
               </Section>
 
