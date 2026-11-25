@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import TopNav, { NavButton } from "@/components/flow/top-nav";
 import { getDisplayMessage } from "@/lib/api/errors";
 import RunHistory from "./run-history";
+import ContentCalendar from "./content-calendar";
 import CustomBlog from "./custom-blog";
 import {
   automationApi,
@@ -594,6 +595,8 @@ export default function GpcAutomationPage() {
               </div>
 
               <CustomBlog />
+
+              <ContentCalendar />
 
               <Section step={1} title="When and how many" desc="Pick the daily start time and how many blog posts to publish each day.">
                 <ScheduleFields s={blog} onChange={patchB} noun="blog" />
