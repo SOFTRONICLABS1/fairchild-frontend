@@ -87,6 +87,32 @@ export type CalendarList = { items: CalendarItem[]; generating: boolean };
 export type CalendarEdit = Partial<Pick<CalendarFull, "title" | "keyword" | "publish_date" | "publish_time" | "excerpt" | "content">> & { state?: "generated" | "approved" };
 export type ScheduleResult = { scheduled: number; published_now: number; failed: Array<{ id: number; title: string; error: string }> };
 
+export type GuideState = "queued" | "generating" | "generated" | "approved" | "published" | "skipped" | "error";
+export type GuideSettings = ScheduleSettings & {
+  guides_per_day: number;
+  auto_publish: boolean;
+  use_cj: boolean;
+  use_impact: boolean;
+  cj_advertiser_ids: string[];
+  impact_campaign_ids: string[];
+  min_price: number;
+  max_price: number;
+};
+export type GuideItem = {
+  category_id: number;
+  path: string;
+  state: GuideState;
+  excerpt: string;
+  product_count: number;
+  error: string | null;
+  link: string | null;
+  updated_at: string;
+  published_at: string | null;
+  has_content: number;
+};
+export type GuideFull = GuideItem & { content: string };
+export type GuideList = { items: GuideItem[]; counts: Partial<Record<GuideState, number>>; leaf_total: number; busy: boolean };
+
 export type RunRequest = { dry_run: boolean; max_categories?: number };
 
 const base = "/api/v1/automation";
@@ -143,6 +169,21 @@ export const automationApi = {
     unwrapEnvelope<CalendarItem>((await http.post<ApiEnvelope<CalendarItem>>(`${base}/calendar/${id}/publish-now`, {}, { timeout: 120000 })).data),
   calendarSchedule: async (body: { ids?: number[]; time: string; timezone: string }) =>
     unwrapEnvelope<ScheduleResult>((await http.post<ApiEnvelope<ScheduleResult>>(`${base}/calendar/schedule`, body, { timeout: 300000 })).data),
+  guideSettings: () => get<GuideSettings>("/guides/settings"),
+  saveGuideSettings: async (body: GuideSettings) =>
+    unwrapEnvelope<GuideSettings>((await http.put<ApiEnvelope<GuideSettings>>(`${base}/guides/settings`, body)).data),
+  guideList: (params: { state?: string; q?: string; limit: number; offset: number }) => get<GuideList>("/guides", params),
+  guideGet: (id: number) => get<GuideFull>(`/guides/${id}`),
+  guideGenerate: async (body: { ids?: number[]; count?: number }) =>
+    unwrapEnvelope<{ queued: number }>((await http.post<ApiEnvelope<{ queued: number }>>(`${base}/guides/generate`, body, { timeout: 120000 })).data),
+  guideEdit: async (id: number, body: { excerpt?: string; content?: string; state?: "generated" | "approved" }) =>
+    unwrapEnvelope<GuideFull>((await http.patch<ApiEnvelope<GuideFull>>(`${base}/guides/${id}`, body)).data),
+  guideApprove: async (body: { ids?: number[]; first_n?: number }) =>
+    unwrapEnvelope<{ approved: number }>((await http.post<ApiEnvelope<{ approved: number }>>(`${base}/guides/approve`, body)).data),
+  guidePublishNow: async (id: number) =>
+    unwrapEnvelope<GuideFull>((await http.post<ApiEnvelope<GuideFull>>(`${base}/guides/${id}/publish-now`, {}, { timeout: 120000 })).data),
+  guideRunNow: async () =>
+    unwrapEnvelope<{ run_id: number }>((await http.post<ApiEnvelope<{ run_id: number }>>(`${base}/guide/run`, { dry_run: false })).data),
   syncCategories: async () =>
     unwrapEnvelope<{ total: number; leaf_count: number; synced_at: string }>(
       (await http.post<ApiEnvelope<{ total: number; leaf_count: number; synced_at: string }>>(`${base}/categories/sync`, {})).data
